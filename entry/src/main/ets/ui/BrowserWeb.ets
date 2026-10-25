@@ -310,10 +310,11 @@ export struct BrowserWeb {
       .domStorageAccess(true)
       .databaseAccess(true)
       .javaScriptAccess(true)
-      // 深色模式跟随系统并强制套用（对应 Android WebSettings.FORCE_DARK_AUTO）：
-      // darkMode 默认 Off，单设 forceDarkAccess 不生效，两个必须成对出现。
+      // 深色模式：跟随系统，但**不强制**给网页反色。
+      // 实测 forceDarkAccess(true) 会把 LibreChat 整页打成白屏（HTTP 200、无 JS 报错），
+      // 与 Android 的 FORCE_DARK_AUTO 同名不同命，宁可少一个效果也不能白屏。
       .darkMode(WebDarkMode.Auto)
-      .forceDarkAccess(true)
+      .forceDarkAccess(false)
       // JS 报错必须落地，否则 ArkWeb 只把 console 丢进 hilog 洪水里
       .onConsole((event?: OnConsoleEvent): boolean => {
         const msg = event?.message;
@@ -325,6 +326,11 @@ export struct BrowserWeb {
           }
         }
         return false;
+      })
+      .onControllerAttached(() => {
+        // 引擎到这里才算真正初始化完成：内核下载委托只能在此时注册
+        // （提前注册会让 ArkWeb 原生层直接崩溃）。
+        AppGraph.configureDownloader();
       })
       .onProgressChange((event: OnProgressChangeEvent): void => {
         this.onProgress(this.tabId, event.newProgress);

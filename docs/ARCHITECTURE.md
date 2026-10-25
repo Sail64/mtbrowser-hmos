@@ -9,7 +9,9 @@ Android 版 `code/mtbrowser` 的 HarmonyOS NEXT 移植。
 
 **已实现但只在编译/静态层验证，尚未上真机**：多标签（LRU 4）与概览层、加载进度条、标题同步、收藏完整流程、HTTP 400 证书清理、302 重定向白名单兜底、SPA pushState URL 同步、危险 scheme 拦截。
 
-**未做**：状态栏染色（页面背景色联动）、书签跨端导入。缺口清单与顺序见本文件末节。
+**未做**：状态栏染色（页面背景色联动）、书签跨端导入。
+
+**深色模式**：只开 `darkMode(Auto)`，**不开** `forceDarkAccess`——实测强制反色会把 LibreChat 整页打成白屏（HTTP 200、无 JS 报错），与 Android `FORCE_DARK_AUTO` 效果不可类比。缺口清单与顺序见本文件末节。
 
 ## 构建与检查命令（无头，不依赖 IDE）
 

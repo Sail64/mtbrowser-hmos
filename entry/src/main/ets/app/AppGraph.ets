@@ -43,6 +43,8 @@ export class AppGraph {
   private static _bookmarks: BookmarkService | undefined = undefined;
   /** 组合根持有 UIAbilityContext：platform 适配器要它（文件选择、下载目录） */
   private static _context: common.UIAbilityContext | undefined = undefined;
+  /** 内核下载提示用的 notifier（UI 层装配时注入） */
+  private static _notifier: CertReminderNotifier | undefined = undefined;
 
   /** EntryAbility.onCreate 调用。重复调用无副作用（幂等）。 */
   static init(context: common.UIAbilityContext): void {
@@ -164,10 +166,23 @@ export class AppGraph {
     return WebFilePicker.pick(AppGraph.ensure(AppGraph._context, 'context'), acceptTypes, multiple);
   }
 
-  /** 内核下载委托：全局注册一次（下载必须走内核栈，才继承 mTLS/证书豁免）。 */
+  /** 内核下载委托：只在 AppGraph 里记下 notifier，真正注册等引擎就绪（见 configureDownloader）。 */
   static installDownloader(notifier: CertReminderNotifier): void {
-    KernelDownloader.install(AppGraph.ensure(AppGraph._context, 'context'),
-      AppGraph.domainWhitelist(), notifier);
+    AppGraph._notifier = notifier;
+  }
+
+  /**
+   * 引擎就绪后再注册内核下载委托。
+   * 由 BrowserWeb 的 onControllerAttached 触发：那时 ArkWeb 原生引擎一定初始化完成，
+   * 在此之前注册会让原生层崩溃。重复调用无副作用。
+   */
+  static configureDownloader(): void {
+    const ctx = AppGraph._context;
+    const n = AppGraph._notifier;
+    if (ctx === undefined || n === undefined) {
+      return;
+    }
+    KernelDownloader.install(ctx, AppGraph.domainWhitelist(), n);
   }
 
   /**

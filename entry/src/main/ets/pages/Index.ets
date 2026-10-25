@@ -90,7 +90,17 @@ struct Index {
       if (restoredAny) {
         const all = this.tabList.all();
         const want = AppGraph.settings().getOpenTabsCurrent();
-        const idx = want >= 0 && want < all.length ? want : all.length - 1;
+        let idx = want >= 0 && want < all.length ? want : all.length - 1;
+        // 存下来的当前标签可能是空白页（比如上次是新建标签后被划掉）：
+        // 优先切到第一个有地址的标签，别让用户一进来就对着白屏。
+        if (all[idx].url === '') {
+          for (let i = 0; i < all.length; i++) {
+            if (all[i].url !== '') {
+              idx = i;
+              break;
+            }
+          }
+        }
         this.tabList.select(all[idx].id);
         this.showHome = false;
         this.homeOverlay = false;

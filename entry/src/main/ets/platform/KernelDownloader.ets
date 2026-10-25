@@ -26,8 +26,11 @@ export class KernelDownloader {
   private static installed: boolean = false;
 
   /**
-   * 全局注册一次（WebviewController.setDownloadDelegate 是静态的）。
-   * 之后任意 Web 实例触发的下载都会走这里。
+   * 全局注册一次（WebDownloadManager.setDownloadDelegate 是静态的）。
+   *
+   * **必须在 ArkWeb 引擎初始化之后调用**：在没有任何 Web 组件时注册，
+   * 原生层会因为引擎未就绪直接 cppcrash（实测 18:15 那次启动即崩，日志只有 cppcrash 记录）。
+   * 所以调用点放在 BrowserWeb 的 onControllerAttached 里，而不是页面 aboutToAppear。
    */
   static install(context: common.UIAbilityContext, whitelist: DomainWhitelist,
     notifier: CertReminderNotifier): void {
