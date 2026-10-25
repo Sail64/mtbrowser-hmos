@@ -77,13 +77,26 @@ struct Index {
     }
     if (savedTabs.length > 0 && hasAnyUrl) {
       const wl = AppGraph.domainWhitelist();
+      const seen: string[] = [];
       let restoredAny = false;
       for (const u of savedTabs) {
-        // 恢复前过一遍白名单 + scheme 闸门：名单可能已被改小，脏 URL 恢复出来只会变成一屏"已拦截"
-        if (u !== '' && (!wl.allows(u) || !Index.isRestorableUrl(u))) {
+        if (u === '') {
+          const blank = this.tabList.newTab('');
+          this.dropEvicted(blank.evicted);
+          restoredAny = true;
           continue;
         }
-        const created: NewTabResult = this.tabList.newTab(u);
+        if (!wl.allows(u) || !Index.isRestorableUrl(u)) {
+          continue;
+        }
+        // 只恢复站点根，不恢复深链：未认证深链会让后端把人踢到登录页并清会话
+        // （LibreChat 的 /c/xxx 就是这种），那样每启动一次就注销一次。
+        const origin = UrlLite.originOf(u);
+        if (origin === null || seen.indexOf(origin) >= 0) {
+          continue;
+        }
+        seen.push(origin);
+        const created: NewTabResult = this.tabList.newTab(origin);
         this.dropEvicted(created.evicted);
         restoredAny = true;
       }

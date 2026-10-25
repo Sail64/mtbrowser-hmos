@@ -36,6 +36,10 @@ ok(UrlLite.withHttpsPrefix('example.org') === 'https://example.org', 'prefix add
 ok(UrlLite.withHttpsPrefix('http://a') === 'http://a', 'prefix keep');
 ok(UrlLite.withHttpsPrefix('  ') === '', 'prefix empty');
 ok(UrlLite.parse('HTTPS://A.Example.COM:8443/x').host === 'a.example.com', 'uppercase scheme keeps host');
+ok(UrlLite.originOf('https://a.example.com:8080/c/9985f5?x=1#y') === 'https://a.example.com:8080', 'origin keeps port, drops path/query/hash');
+ok(UrlLite.originOf('https://a.com') === 'https://a.com', 'origin bare host');
+ok(UrlLite.originOf('https://u:p@a.com:8/x') === 'https://a.com:8', 'origin strips userinfo');
+ok(UrlLite.originOf('mailto:x@y.z') === null, 'origin null for non-hierarchical');
 // 反斜杠必须当 authority 终止符，否则 `https://evil.com\@allowed.com/x` 会被判成 allowed.com
 ok(UrlLite.parse('https://evil.com\\@allowed.com/x').host === 'evil.com', 'backslash ends authority (chromium parity)');
 ok(UrlLite.parse('https://al\\lowed.com/x').host === 'al', 'backslash splits host like chromium');

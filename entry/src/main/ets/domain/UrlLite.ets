@@ -71,6 +71,40 @@ export class UrlLite {
     return UrlLite.parse(url).host;
   }
 
+  /**
+   * 取站点根：`scheme://host[:port]`，无路径/查询/片段。
+   * 用于「恢复上次会话」——恢复深链会撞上后端的未认证深链逻辑（例如 LibreChat 会把
+   * 未认证的 /c/xxx 直接踢到 /login 并清会话），等于自己把登录态踢掉一次。
+   * 端口必须保留：同一 host 上不同端口是不同服务。
+   */
+  static originOf(url: string | null): string | null {
+    if (url === null) {
+      return null;
+    }
+    const s = url.trim();
+    const m = SCHEME_RE.exec(s);
+    if (m === null) {
+      return null;
+    }
+    const scheme = m[1].toLowerCase();
+    if (s.substring(0, scheme.length + 3).toLowerCase() !== `${scheme}://`) {
+      return null;
+    }
+    const rest = s.substring(scheme.length + 3);
+    const term = /[\\/?#]/.exec(rest);
+    const authority = term === null ? rest : rest.substring(0, term.index);
+    if (authority === '') {
+      return null;
+    }
+    // authority 里去掉 userinfo，保留 host:port
+    const at = authority.lastIndexOf('@');
+    const hostPort = at === -1 ? authority : authority.substring(at + 1);
+    if (hostPort === '') {
+      return null;
+    }
+    return `${scheme}://${hostPort}`;
+  }
+
   /** 是否绝对 URL（带合法 scheme）。 */
   static isAbsolute(url: string): boolean {
     return SCHEME_RE.test(url.trim());
