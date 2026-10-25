@@ -123,6 +123,8 @@ export struct HomeView {
                   }
                   .alignItems(HorizontalAlign.Start)
                   .layoutWeight(1)
+                  // 打开站点只绑在左侧信息区：绑到整行会和右边「⋯」的菜单抢点击
+                  .onClick(() => this.openSite(s.url))
 
                   Button('⋯', { type: ButtonType.Circle })
                     .fontSize(16)
@@ -139,7 +141,6 @@ export struct HomeView {
                 .padding(14)
                 .backgroundColor(Color.White)
                 .borderRadius(12)
-                .onClick(() => this.openSite(s.url))
               }
             },
             (s: Site): string => `${s.id}-${s.name}-${s.url}`)

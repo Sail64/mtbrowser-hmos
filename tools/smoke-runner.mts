@@ -9,6 +9,8 @@ import { CertInfo, CertKind, CertVerdict, NavigationDecision, kindLabel } from '
 import { DefaultSslTrustPolicy, SslDecisionKind } from './domain/SslTrustPolicy.ts';
 import { DefaultNavigationPolicy } from './domain/NavigationPolicy.ts';
 import { DomainWhitelist } from './domain/DomainWhitelist.ts';
+import { fileNameFrom, sanitizeFileName, extensionForMime } from './domain/FileName.ts';
+import { suffixFilters } from './domain/AcceptTypes.ts';
 import { parseAsn1Time } from './domain/Asn1Time.ts';
 import { ServerCertReminderService } from './domain/ServerCertReminderService.ts';
 import type { CertificateSource, CertReminderNotifier } from './domain/ServerCertReminderService.ts';
@@ -276,6 +278,25 @@ const existing = r1.site!;
 const r5 = bm.save(existing, '改名', 'https://ok.com/path');
 ok(r5.outcome === SaveOutcome.UPDATED && r5.site!.name === '改名', 'bookmark update rewrites name');
 ok(r5.site!.createdAt === existing.createdAt && r5.site!.id === existing.id, 'bookmark update keeps id/createdAt');
+
+// —— FileName：下载文件名（服务端可控，必须防穿越） ——
+ok(sanitizeFileName('../../etc/passwd') === 'passwd', 'filename strips traversal');
+ok(sanitizeFileName('..\\..\\win.ini') === 'win.ini', 'filename strips windows traversal');
+ok(sanitizeFileName('/abs/path/a.pdf') === 'a.pdf', 'filename strips leading dirs');
+ok(sanitizeFileName('a\u0000b\n.txt') === 'ab.txt', 'filename strips control chars');
+ok(sanitizeFileName('..') === '' && sanitizeFileName('.hidden') === 'hidden', 'filename dot handling');
+ok(sanitizeFileName('x'.repeat(300)).length === 120, 'filename capped to 120');
+ok(fileNameFrom('attachment; filename="report.pdf"', 'https://h/x', 'application/pdf') === 'report.pdf', 'cd plain');
+ok(fileNameFrom("attachment; filename*=UTF-8''%E4%B8%AD%E6%96%87.pdf", 'https://h/x', 'application/pdf') === '中文.pdf', 'cd rfc5987');
+ok(fileNameFrom('', 'https://h/dir/file.zip?sig=1', 'application/zip') === 'file.zip', 'url basename');
+ok(fileNameFrom('', 'https://h/', 'application/pdf') === 'download.pdf', 'fallback by mime');
+ok(extensionForMime('application/x-pkcs12') === '.p12', 'mime p12');
+
+// —— AcceptTypes：accept 翻译 ——
+ok(suffixFilters(['*/*']).length === 0, 'accept wildcard = no filter');
+ok(suffixFilters(['image/*']).indexOf('.png') >= 0, 'accept image');
+ok(suffixFilters(['application/pdf']).join(',') === '.pdf', 'accept pdf');
+ok(suffixFilters(['image/png', 'image/*']).length === 7, 'accept dedupe');
 
 // —— FabGeometry：悬浮按钮边界规则 ——
 import { FabGeometry, FAB_UNSET } from './domain/FabGeometry.ts';

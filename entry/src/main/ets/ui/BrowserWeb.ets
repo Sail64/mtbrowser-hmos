@@ -418,13 +418,19 @@ export struct BrowserWeb {
         }
         const info = event.error;
         const req = event.request;
-        // 只对主框架提示：子资源失败（图片/埋点）不该打断用户
-        if (req === undefined || !req.isMainFrame()) {
-          hilog.warn(DOMAIN, TAG, 'subresource load error: %{public}s', info.getErrorInfo());
+        const code = info.getErrorCode();
+        // -3 ERR_ABORTED：我们自己 stop()/loadUrl('about:blank') 拦截页面、切标签、
+        //   首帧 about:blank 被新导航顶掉，都会产生它；这不是"加载失败"，不能弹提示。
+        // -20 ERR_BLOCKED_BY_CLIENT：onLoadIntercept 拦下的导航。
+        if (code === -3 || code === -20) {
           return;
         }
-        hilog.error(DOMAIN, TAG, 'main frame load error: %{public}s (%{public}s)',
-          info.getErrorInfo(), info.getErrorCode().toString());
+        // 只对主框架提示：子资源失败（图片/埋点）不该打断用户
+        if (req === undefined || !req.isMainFrame()) {
+          hilog.warn(DOMAIN, TAG, 'subresource load error: %{public}s (code=%{public}d)', info.getErrorInfo(), code);
+          return;
+        }
+        hilog.error(DOMAIN, TAG, 'main frame load error: %{public}s (code=%{public}d)', info.getErrorInfo(), code);
         if (!this.loadErrorNotified) {
           this.loadErrorNotified = true;
           this.toast('页面加载失败，可点 ↻ 重试');

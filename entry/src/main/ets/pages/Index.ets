@@ -61,20 +61,29 @@ struct Index {
     // （用户抱怨过"每次被杀掉再启动都跑到 8443 那个"）。
     const savedTabs = AppGraph.settings().getOpenTabs();
     if (savedTabs.length > 0) {
+      const wl = AppGraph.domainWhitelist();
+      let restoredAny = false;
       for (const u of savedTabs) {
+        // 恢复前过一遍白名单：名单可能已经被改小，脏 URL 恢复出来只会变成一屏"已拦截"
+        if (u !== '' && !wl.allows(u)) {
+          continue;
+        }
         const created: NewTabResult = this.tabList.newTab(u);
         this.dropEvicted(created.evicted);
+        restoredAny = true;
       }
-      const all = this.tabList.all();
-      const want = AppGraph.settings().getOpenTabsCurrent();
-      const idx = want >= 0 && want < all.length ? want : all.length - 1;
-      this.tabList.select(all[idx].id);
-      this.showHome = false;
-      this.homeOverlay = false;
-      this.syncTabs();
-      // 启动时打一行 cookie 计数：和 pageEnd 那行对照，就能判断是"没写盘"还是"没读回"
-      AppGraph.reportCookies(all[idx].url, 'startup');
-      return;
+      if (restoredAny) {
+        const all = this.tabList.all();
+        const want = AppGraph.settings().getOpenTabsCurrent();
+        const idx = want >= 0 && want < all.length ? want : all.length - 1;
+        this.tabList.select(all[idx].id);
+        this.showHome = false;
+        this.homeOverlay = false;
+        this.syncTabs();
+        // 启动时打一行 cookie 计数：和 pageEnd 那行对照，就能判断是"没写盘"还是"没读回"
+        AppGraph.reportCookies(all[idx].url, 'startup');
+        return;
+      }
     }
     // 没有会话记录时才退回 Android 的旧语义：lastUrl 的 host 命中书签才自动恢复站点根
     const last = AppGraph.settings().getLastUrl();

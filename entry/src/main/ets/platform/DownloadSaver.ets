@@ -2,6 +2,7 @@ import { request } from '@kit.BasicServicesKit';
 import { common } from '@kit.AbilityKit';
 import { fileIo } from '@kit.CoreFileKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { fileNameFrom } from '../domain/FileName';
 
 const DOMAIN = 0x0001;
 const TAG = 'DownloadSaver';
@@ -24,58 +25,6 @@ export class DownloadOutcome {
  * 为了一个浏览器自用场景把权限面放大不值得；导出到公共目录用户可用文件管理器复制。
  */
 export class DownloadSaver {
-  /** 从 Content-Disposition 里抠文件名（支持 filename*=UTF-8''xxx 与 filename="xxx"）。 */
-  static fileNameFrom(contentDisposition: string, url: string, mimetype: string): string {
-    const cd = contentDisposition === undefined ? '' : contentDisposition;
-    const star = /filename\*\s*=\s*[^']*'[^']*'([^;]+)/i.exec(cd);
-    if (star !== null) {
-      try {
-        return decodeURIComponent(star[1].trim());
-      } catch (e) {
-        // 编码异常就退回下一个分支
-      }
-    }
-    const plain = /filename\s*=\s*"?([^";]+)"?/i.exec(cd);
-    if (plain !== null && plain[1].trim() !== '') {
-      return plain[1].trim();
-    }
-    const clean = url.split('?')[0].split('#')[0];
-    const slash = clean.lastIndexOf('/');
-    const base = slash >= 0 ? clean.substring(slash + 1) : clean;
-    if (base !== '' && base.indexOf('.') > 0) {
-      return base;
-    }
-    // 实在没有名字：按 mime 猜一个，别存成无扩展名文件
-    const ext = DownloadSaver.extensionForMime(mimetype);
-    return base === '' ? `download${ext}` : `${base}${ext}`;
-  }
-
-  static extensionForMime(mimetype: string): string {
-    const m = mimetype === undefined ? '' : mimetype.toLowerCase();
-    if (m.indexOf('pdf') >= 0) {
-      return '.pdf';
-    }
-    if (m.indexOf('json') >= 0) {
-      return '.json';
-    }
-    if (m.indexOf('zip') >= 0) {
-      return '.zip';
-    }
-    if (m.indexOf('pkcs12') >= 0 || m.indexOf('x-pkcs') >= 0) {
-      return '.p12';
-    }
-    if (m.indexOf('x-pem') >= 0 || m.indexOf('pkix-cert') >= 0) {
-      return '.pem';
-    }
-    if (m.indexOf('image') >= 0) {
-      return '.png';
-    }
-    if (m.indexOf('text') >= 0) {
-      return '.txt';
-    }
-    return '.bin';
-  }
-
   /** 下载到应用私有 downloads 目录；返回给用户看的落点说明。 */
   static async save(context: common.UIAbilityContext, url: string, contentDisposition: string,
     mimetype: string, cookie: string, userAgent: string): Promise<DownloadOutcome> {
@@ -93,7 +42,7 @@ export class DownloadSaver {
       hilog.error(DOMAIN, TAG, 'mkdir downloads failed: %{public}s', JSON.stringify(e));
       return new DownloadOutcome(false, '无法创建下载目录');
     }
-    const name = DownloadSaver.fileNameFrom(contentDisposition, url, mimetype);
+    const name = fileNameFrom(contentDisposition, url, mimetype);
     // 同名不覆盖：加 -1 / -2 后缀
     let target = `${dir}/${name}`;
     let seq = 1;
