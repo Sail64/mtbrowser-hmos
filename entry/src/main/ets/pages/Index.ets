@@ -48,8 +48,6 @@ struct Index {
   @State webH: number = 0;
   /** 本轮是否已经"退回主页覆盖层"过一次（用于让返回键有终点，不再死循环） */
   private backHomeOnce: boolean = false;
-  /** 已真正加载过页面的标签（恢复出来的后台标签是空白占位，选中时才加载） */
-  private loadedTabs: Set<number> = new Set();
   /** persistTabs 节流时间戳（pageEnd 可能很密集，不必每次都写 preferences） */
   private lastPersistAt: number = 0;
 
@@ -297,12 +295,8 @@ struct Index {
       this.backHomeOnce = false;
       this.showHome = false;
       this.homeOverlay = false;
-      // 恢复出来的后台标签是"空白占位"：第一次被选中时才真正加载
-      const tab = this.tabList.find(id);
-      if (tab !== null && tab.url !== '' && !this.loadedTabs.has(id)) {
-        this.loadedTabs.add(id);
-        this.loadWithRetry(id, tab.url, OPEN_RETRY_LEFT);
-      }
+      // 首次导航由 BrowserWeb 自己在 active 变 true 时补上（隐藏状态下控制器没就绪，
+      // 父层隔空 loadUrl 会静默失败 → 切过去永远白屏）。
       // 恢复该标签自己的进度（它可能仍在加载）
       this.progress = this.tabList.progressOf(id);
       this.syncTabs();
@@ -416,7 +410,6 @@ struct Index {
       return; // 空标签页不写入 tab.url：概览层与地址栏保持占位文案
     }
     this.tabList.update(id, url);
-    this.loadedTabs.add(id);
     // 导航完成才是"这个标签现在是什么地址"的真相：不在这里写盘，
     // 恢复时会拿到创建时的旧 URL（新标签甚至是空串）。
     this.persistTabsThrottled();
@@ -431,7 +424,6 @@ struct Index {
   /** 主框架被白名单拦下、文档已卸载成空白页：清掉旧 URL，地址栏不许继续展示上一个正常页。 */
   private onTabBlocked(id: number): void {
     this.tabList.clearUrl(id);
-    this.loadedTabs.delete(id);
     this.persistTabsThrottled();
     if (id === this.tabList.currentId()) {
       this.progress = 0;
@@ -454,13 +446,9 @@ struct Index {
 
   // ---------- 渲染辅助 ----------
 
-  /** 标签创建时的初始地址：只有当前标签立即加载，后台标签等被选中再加载。 */
+  /** 标签创建时的初始地址：空标签用 about:blank。后台标签也带着真实 URL，
+   *  但由 BrowserWeb 在"变成可见"时自己加载（见 active 属性），父层不隔空点隐藏控制器。 */
   private initialUrlOf(id: number): string {
-    if (id !== this.tabList.currentId()) {
-      // 冷启动恢复多个标签时，4 个 Web 一起挂载会同时发起 4 个导航（mTLS 站点会连着弹
-      // 证书选择框，后台标签的错误 toast 也会弹到前台）。后台标签先留空白，选中时再加载。
-      return 'about:blank';
-    }
     const tab = this.tabList.find(id);
     if (tab === null || tab.url === '') {
       return 'about:blank';
@@ -609,6 +597,7 @@ struct Index {
               tabId: id,
               controller: this.controllerOf(id),
               initialUrl: this.initialUrlOf(id),
+              active: id === this.currentId,
               onProgress: (tabId: number, p: number): void => this.onTabProgress(tabId, p),
               onTitle: (tabId: number, t: string): void => this.onTabTitle(tabId, t),
               onPageEnd: (tabId: number, u: string): void => this.onTabPageEnd(tabId, u),

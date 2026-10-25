@@ -37,6 +37,12 @@ export struct BrowserWeb {
   controller: webview.WebviewController = new webview.WebviewController();
   /** 该标签的初始地址：仅首次挂载时消费一次，之后导航一律走 controller.loadUrl() */
   initialUrl: string = 'about:blank';
+  /**
+   * 是否为当前可见标签。后台标签不发起导航（避免冷启动时 N 个 mTLS 标签同时弹证书框），
+   * 变成可见时由本组件自己补上首次导航——不能让父层隔空点隐藏的控制器，
+   * 那样会打到一个还没 attach 的 controller 上，表现为"地址栏有 URL、页面永远空白"。
+   */
+  @Prop @Watch('onActiveChanged') active: boolean = false;
 
   onProgress: (tabId: number, progress: number) => void = (): void => {};
   onTitle: (tabId: number, title: string) => void = (): void => {};
@@ -85,6 +91,45 @@ export struct BrowserWeb {
     }
     this.sslHostsShown.clear();
     AppGraph.persistCookies(true);
+  }
+
+  /**
+   * 补上首次导航。只在"可见"时做：隐藏状态的 Web 控制器不一定就绪，
+   * 盲调 loadUrl 会静默失败（表现为地址栏有 URL、页面永远白）。
+   */
+  private tryLoadPending(attempt: number): void {
+    if (this.initialLoadStarted || !this.active) {
+      return;
+    }
+    if (this.pendingUrl === '' || this.pendingUrl === 'about:blank') {
+      return;
+    }
+    try {
+      this.controller.loadUrl(this.pendingUrl);
+      this.initialLoadStarted = true;
+    } catch (e) {
+      // 引擎还没 attach：短延迟再试，有界（6 次 × 120ms）
+      if (attempt >= 6) {
+        hilog.error(DOMAIN, TAG, 'initial loadUrl gave up: %{public}s', JSON.stringify(e));
+        this.toast('页面加载失败，可点 ↻ 重试');
+        return;
+      }
+      setTimeout(() => {
+        this.tryLoadPending(attempt + 1);
+      }, 120);
+    }
+  }
+
+  /** 从后台切到前台：把一直挂着的首次导航补上。
+   *  必须等一帧再发：切标签的同一帧里组件刚从 Visibility.None 变可见，
+   *  此时 loadUrl 会被内核立刻 ERR_ABORTED(-3) 掐掉（实测日志），页面永远停在 about:blank。 */
+  private onActiveChanged(): void {
+    if (!this.active) {
+      return;
+    }
+    setTimeout(() => {
+      this.tryLoadPending(0);
+    }, 250);
   }
 
   private toast(message: string): void {
@@ -336,7 +381,13 @@ export struct BrowserWeb {
         this.onProgress(this.tabId, event.newProgress);
       })
       .onTitleReceive((event: OnTitleReceiveEvent): void => {
-        this.onTitle(this.tabId, event.title);
+        // about:blank 也会报标题（内容就是 "about:blank"）：它不是页面标题，
+        // 写进去会让概览层显示成 about:blank。
+        const t = event.title;
+        if (t === undefined || t === '' || t === 'about:blank') {
+          return;
+        }
+        this.onTitle(this.tabId, t);
       })
       .onLoadIntercept((event?: OnLoadInterceptEvent): boolean => {
         const data = event?.data;
@@ -456,16 +507,7 @@ export struct BrowserWeb {
         const url = event?.url ?? '';
         // 空白页加载结束：这才是发起首次导航的安全时机
         if (url === 'about:blank' || url === '') {
-          if (!this.initialLoadStarted && this.pendingUrl !== '' && this.pendingUrl !== 'about:blank') {
-            this.initialLoadStarted = true;
-            try {
-              this.controller.loadUrl(this.pendingUrl);
-            } catch (e) {
-              this.initialLoadStarted = false;
-              hilog.error(DOMAIN, TAG, 'initial loadUrl failed: %{public}s', JSON.stringify(e));
-              this.toast('页面加载失败，可点 ↻ 重试');
-            }
-          }
+          this.tryLoadPending(0);
           return;
         }
         // 被白名单拦下的页面不得写回 tab.url / lastUrl
