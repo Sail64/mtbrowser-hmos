@@ -19,6 +19,7 @@ import { window } from '@kit.ArkUI';
 import { webview } from '@kit.ArkWeb';
 import { AppGraph } from '../app/AppGraph';
 
+
 const DOMAIN = 0x0000;
 
 export default class EntryAbility extends UIAbility {
@@ -40,7 +41,14 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
+  onBackground(): void {
+    // 用户把应用划掉之前必经这里：cookie 不落盘的话，重新进就要重新登录
+    AppGraph.persistCookies(true);
+    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
+  }
+
   onDestroy(): void {
+    AppGraph.persistCookies(true);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
@@ -65,10 +73,5 @@ export default class EntryAbility extends UIAbility {
   onForeground(): void {
     // Ability has brought to foreground
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
-  }
-
-  onBackground(): void {
-    // Ability has back to background
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }
 }

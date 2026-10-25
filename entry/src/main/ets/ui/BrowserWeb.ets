@@ -7,6 +7,7 @@ import { NavigationDecision } from '../domain/model/CertModels';
 import { SslDecisionKind } from '../domain/SslTrustPolicy';
 import { sslErrorLabel } from '../domain/SslErrorLabels';
 import { ServerCertReminderService, CertReminderNotifier } from '../domain/ServerCertReminderService';
+
 import { ToastNotifier } from './ToastNotifier';
 
 /**
@@ -80,6 +81,7 @@ export struct BrowserWeb {
       showingSslHosts.delete(h);
     }
     this.sslHostsShown.clear();
+    AppGraph.persistCookies(true);
   }
 
   private toast(message: string): void {
@@ -401,6 +403,9 @@ export struct BrowserWeb {
         }
         this.onPageEnd(this.tabId, url);
         this.reminderService?.onPageEnd(url);
+        // 登录/会话 cookie 在这里写盘：SPA 登录后常有一次跳转或刷新，
+        // 不落盘的话进程被杀就丢登录态。
+        AppGraph.persistCookies(false);
       })
       .onPageBegin((event?: OnPageBeginEvent): void => {
         // 新一次主框架导航开始：提交前都不算 committed

@@ -19,6 +19,7 @@ import { PrefProbeThrottleStore } from '../data/PrefProbeThrottleStore';
 import { SettingsStore } from '../data/SettingsStore';
 import { CertManagerClientCertSelector } from '../platform/CertManagerClientCertSelector';
 import { BookmarkService } from '../domain/BookmarkService';
+import { CookiePersistence } from '../platform/CookiePersistence';
 
 const WHITELIST_FILE = 'domain_whitelist.txt';
 
@@ -131,6 +132,18 @@ export class AppGraph {
   /** 收藏保存的唯一入口（URL 规范化 / 去重 / 白名单提示都在它内部）。 */
   static bookmarks(): BookmarkService {
     return AppGraph.ensure(AppGraph._bookmarks, 'bookmarks');
+  }
+
+  /**
+   * Cookie 落盘（ArkWeb 的 cookie 默认只在内存）。
+   * UI 层不直接碰 platform/*，统一经组合根；immediate=false 走节流版本。
+   */
+  static persistCookies(immediate: boolean): void {
+    if (immediate) {
+      CookiePersistence.flush();
+    } else {
+      CookiePersistence.save();
+    }
   }
 
   /**
