@@ -7,7 +7,9 @@ import { NavigationDecision } from '../domain/model/CertModels';
 import { SslDecisionKind } from '../domain/SslTrustPolicy';
 import { sslErrorLabel } from '../domain/SslErrorLabels';
 import { ServerCertReminderService, CertReminderNotifier } from '../domain/ServerCertReminderService';
-
+import { WebFilePicker } from '../platform/WebFilePicker';
+import { DownloadSaver, DownloadOutcome } from '../platform/DownloadSaver';
+import { CookiePersistence } from '../platform/CookiePersistence';
 import { ToastNotifier } from './ToastNotifier';
 
 /**
@@ -67,6 +69,8 @@ export struct BrowserWeb {
   private certCacheClearOk: boolean = true;
   /** 本实例登记进 showingSslHosts 的 host（销毁时负责撤销） */
   private sslHostsShown: Set<string> = new Set();
+  /** 本轮导航是否已提示过加载失败（避免错误风暴刷屏） */
+  private loadErrorNotified: boolean = false;
 
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
@@ -81,7 +85,7 @@ export struct BrowserWeb {
       showingSslHosts.delete(h);
     }
     this.sslHostsShown.clear();
-    AppGraph.persistCookies(true);
+    CookiePersistence.flush();
   }
 
   private toast(message: string): void {
@@ -294,6 +298,10 @@ export struct BrowserWeb {
       .domStorageAccess(true)
       .databaseAccess(true)
       .javaScriptAccess(true)
+      // 深色模式跟随系统并强制套用（对应 Android WebSettings.FORCE_DARK_AUTO）：
+      // darkMode 默认 Off，单设 forceDarkAccess 不生效，两个必须成对出现。
+      .darkMode(WebDarkMode.Auto)
+      .forceDarkAccess(true)
       // JS 报错必须落地，否则 ArkWeb 只把 console 丢进 hilog 洪水里
       .onConsole((event?: OnConsoleEvent): boolean => {
         const msg = event?.message;
@@ -372,6 +380,56 @@ export struct BrowserWeb {
         this.onBlocked(this.tabId);
         this.toast(`已阻止加载：${blockedHost}（不在白名单）`);
       })
+      .onShowFileSelector((event: OnShowFileSelectorEvent): boolean => {
+        // 网页里的 <input type="file">（LibreChat 附件、Hermes 上传都走这里）
+        const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+        WebFilePicker.pick(ctx, event.fileSelector)
+          .then((uris: string[]) => {
+            // 取消也必须回传空数组，否则内核侧 file input 会一直挂着，再点无反应
+            event.result.handleFileList(uris);
+          })
+          .catch((e: Error) => {
+            hilog.error(DOMAIN, TAG, 'file selector failed: %{public}s', JSON.stringify(e));
+            event.result.handleFileList([]);
+          });
+        return true; // 已接管
+      })
+      .onDownloadStart((event: OnDownloadStartEvent): void => {
+        const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
+        let cookie = '';
+        try {
+          cookie = webview.WebCookieManager.fetchCookieSync(event.url);
+        } catch (e) {
+          cookie = '';
+        }
+        this.toast('开始下载…');
+        DownloadSaver.save(ctx, event.url, event.contentDisposition, event.mimetype, cookie, event.userAgent)
+          .then((out: DownloadOutcome) => {
+            this.toast(out.detail);
+          })
+          .catch((e: Error) => {
+            hilog.error(DOMAIN, TAG, 'download failed: %{public}s', JSON.stringify(e));
+            this.toast('下载失败');
+          });
+      })
+      .onErrorReceive((event?: OnErrorReceiveEvent): void => {
+        if (event === undefined) {
+          return;
+        }
+        const info = event.error;
+        const req = event.request;
+        // 只对主框架提示：子资源失败（图片/埋点）不该打断用户
+        if (req === undefined || !req.isMainFrame()) {
+          hilog.warn(DOMAIN, TAG, 'subresource load error: %{public}s', info.getErrorInfo());
+          return;
+        }
+        hilog.error(DOMAIN, TAG, 'main frame load error: %{public}s (%{public}s)',
+          info.getErrorInfo(), info.getErrorCode().toString());
+        if (!this.loadErrorNotified) {
+          this.loadErrorNotified = true;
+          this.toast('页面加载失败，可点 ↻ 重试');
+        }
+      })
       .onSslErrorEvent((event: SslErrorEvent): void => {
         this.handleSslError(event);
       })
@@ -405,12 +463,14 @@ export struct BrowserWeb {
         this.reminderService?.onPageEnd(url);
         // 登录/会话 cookie 在这里写盘：SPA 登录后常有一次跳转或刷新，
         // 不落盘的话进程被杀就丢登录态。
-        AppGraph.persistCookies(false);
+        CookiePersistence.save();
+        CookiePersistence.report(url, 'pageEnd');
       })
       .onPageBegin((event?: OnPageBeginEvent): void => {
         // 新一次主框架导航开始：提交前都不算 committed
         this.mainFrameCommitted = false;
         this.subresourceWarned = false;
+        this.loadErrorNotified = false;
       })
       // SPA 的 pushState / hash 变化不触发 onPageEnd：地址栏与后台 URL 在这里同步
       // （等价 Android doUpdateVisitedHistory 的 URL 同步职责）

@@ -1,5 +1,6 @@
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { UrlLite } from '../domain/UrlLite';
 
 const DOMAIN = 0x0001;
 const TAG = 'CookiePersist';
@@ -33,8 +34,42 @@ export class CookiePersistence {
 
   /** 立即落盘（离开前台/退出时用，不节流）。 */
   static flush(): void {
-    webview.WebCookieManager.saveCookieAsync().catch((e: Error) => {
-      hilog.error(DOMAIN, TAG, 'saveCookieAsync failed: %{public}s', JSON.stringify(e));
-    });
+    webview.WebCookieManager.saveCookieAsync()
+      .then(() => {
+        hilog.info(DOMAIN, TAG, 'saveCookieAsync ok');
+      })
+      .catch((e: Error) => {
+        hilog.error(DOMAIN, TAG, 'saveCookieAsync failed: %{public}s', JSON.stringify(e));
+      });
+  }
+
+  /**
+   * 诊断用：打印某 URL 当前可见的 cookie 数量/长度（**不打印内容**，避免把会话令牌写进日志）。
+   * `when` 用来区分调用时机（startup / pageEnd），排查"登录态没保住"时对照这两行即可判断
+   * 是「没写盘」还是「写盘了但启动时没读回来」。
+   */
+  static report(url: string, when: string): void {
+    if (url === '' || url === 'about:blank') {
+      return;
+    }
+    try {
+      const raw = webview.WebCookieManager.fetchCookieSync(url);
+      const host = UrlLite.hostOf(url);
+      const names: string[] = [];
+      if (raw !== '') {
+        for (const part of raw.split(';')) {
+          const eq = part.indexOf('=');
+          const name = (eq > 0 ? part.substring(0, eq) : part).trim();
+          if (name !== '') {
+            names.push(name);
+          }
+        }
+      }
+      // 只打名字和长度：值里是会话令牌，绝不落日志
+      hilog.info(DOMAIN, TAG, 'cookie[%{public}s] host=%{public}s n=%{public}d names=%{public}s len=%{public}d',
+        when, host === null ? '?' : host, names.length, names.join(','), raw.length);
+    } catch (e) {
+      hilog.error(DOMAIN, TAG, 'fetchCookieSync failed: %{public}s', JSON.stringify(e));
+    }
   }
 }

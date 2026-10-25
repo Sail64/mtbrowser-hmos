@@ -146,6 +146,11 @@ export class AppGraph {
     }
   }
 
+  /** 诊断：打印 cookie 数量（不含内容），用于判断登录态是否真的落盘/读回。 */
+  static reportCookies(url: string, when: string): void {
+    CookiePersistence.report(url, when);
+  }
+
   /**
    * 证书提醒服务的装配工厂：编排端口全在 AppGraph（单例）；
    * CertificateSource 绑定每标签 WebviewController（UI 生命周期），由调用方传入 controller。

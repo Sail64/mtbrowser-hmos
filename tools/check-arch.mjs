@@ -24,7 +24,9 @@ const RULES = {
   domain: ['domain'],
   data: ['domain', 'data'],
   platform: ['domain', 'platform'],
-  ui: ['domain', 'ui', 'app'],
+  // ui 可以直接用 platform 适配器（文件选择、下载、Cookie 落盘这类 ArkWeb/OS 能力），
+  // 因为两者都是"平台面"的层；但 ui 仍然不许碰 data，业务状态必须经 domain/app。
+  ui: ['domain', 'platform', 'ui', 'app'],
   pages: ['domain', 'ui', 'pages', 'app'],
   // 组合根：允许全部（它就是装配点）
   entryability: ['domain', 'data', 'platform', 'ui', 'pages', 'app'],

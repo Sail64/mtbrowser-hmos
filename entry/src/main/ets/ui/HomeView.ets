@@ -126,6 +126,10 @@ export struct HomeView {
 
                   Button('⋯', { type: ButtonType.Circle })
                     .fontSize(16)
+                    .fontColor('#5F6368')
+                    .backgroundColor('#F2F3F5')
+                    .width(30)
+                    .height(30)
                     .bindMenu([
                       { value: '编辑', action: (): void => this.showEditor(s) },
                       { value: '删除', action: (): void => this.removeSite(s) }

@@ -57,8 +57,26 @@ struct Index {
 
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
-    // 与 Android 一致：只有 lastUrl 的 host 命中已保存的书签才自动恢复，
-    // 且恢复的是书签 URL（站点根），不是任意历史深链。
+    // 恢复上次的会话：把所有还开着的标签一起恢复，而不是退回单一首页
+    // （用户抱怨过"每次被杀掉再启动都跑到 8443 那个"）。
+    const savedTabs = AppGraph.settings().getOpenTabs();
+    if (savedTabs.length > 0) {
+      for (const u of savedTabs) {
+        const created: NewTabResult = this.tabList.newTab(u);
+        this.dropEvicted(created.evicted);
+      }
+      const all = this.tabList.all();
+      const want = AppGraph.settings().getOpenTabsCurrent();
+      const idx = want >= 0 && want < all.length ? want : all.length - 1;
+      this.tabList.select(all[idx].id);
+      this.showHome = false;
+      this.homeOverlay = false;
+      this.syncTabs();
+      // 启动时打一行 cookie 计数：和 pageEnd 那行对照，就能判断是"没写盘"还是"没读回"
+      AppGraph.reportCookies(all[idx].url, 'startup');
+      return;
+    }
+    // 没有会话记录时才退回 Android 的旧语义：lastUrl 的 host 命中书签才自动恢复站点根
     const last = AppGraph.settings().getLastUrl();
     if (last === null || last === '') {
       return;
@@ -91,6 +109,24 @@ struct Index {
     this.currentId = this.tabList.currentId();
     this.metaVersion = this.metaVersion + 1;
     this.syncAddress();
+    this.persistTabs();
+  }
+
+  /** 把当前标签集合写盘，供下次冷启动恢复（被杀掉也不丢会话）。 */
+  private persistTabs(): void {
+    const all = this.tabList.all();
+    if (all.length === 0) {
+      AppGraph.settings().setOpenTabs([], 0);
+      return;
+    }
+    const urls: string[] = all.map((t: TabMeta): string => t.url);
+    let idx = 0;
+    for (let i = 0; i < all.length; i++) {
+      if (all[i].id === this.tabList.currentId()) {
+        idx = i;
+      }
+    }
+    AppGraph.settings().setOpenTabs(urls, idx);
   }
 
   private dropEvicted(evicted: number[]): void {
