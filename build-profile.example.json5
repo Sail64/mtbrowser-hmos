@@ -1,0 +1,54 @@
+{
+  // 本文件是模板：真实签名材料与口令只在本地 build-profile.json5（已被 .gitignore 排除）。
+  // 新机器上：cp build-profile.example.json5 build-profile.json5，
+  // 再用 `devecocli signature generate` 生成本机签名，把下面四项替换成
+  // ~/.ohos/config/ 下的实际文件名。
+  app: {
+    signingConfigs: [
+      {
+        name: 'default',
+        type: 'HarmonyOS',
+        material: {
+          certpath: '/Users/<you>/.ohos/config/default_<bundle>_<hash>.cer',
+          keyAlias: 'debugKey',
+          keyPassword: '<由 DevEco/devecocli 生成，不要提交>',
+          profile: '/Users/<you>/.ohos/config/default_<bundle>_<hash>.p7b',
+          signAlg: 'SHA256withECDSA',
+          storeFile: '/Users/<you>/.ohos/config/default_<bundle>_<hash>.p12',
+          storePassword: '<由 DevEco/devecocli 生成，不要提交>',
+        },
+      },
+    ],
+    products: [
+      {
+        name: 'default',
+        signingConfig: 'default',
+        targetSdkVersion: '26.0.0',
+        compatibleSdkVersion: '26.0.0',
+        runtimeOS: 'HarmonyOS',
+        buildOption: {
+          strictMode: {
+            caseSensitiveCheck: true,
+            useNormalizedOHMUrl: true,
+          },
+        },
+      },
+    ],
+    buildModeSet: [
+      { name: 'debug' },
+      { name: 'release' },
+    ],
+  },
+  modules: [
+    {
+      name: 'entry',
+      srcPath: './entry',
+      targets: [
+        {
+          name: 'default',
+          applyToProducts: ['default'],
+        },
+      ],
+    },
+  ],
+}

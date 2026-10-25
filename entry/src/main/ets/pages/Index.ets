@@ -1,0 +1,555 @@
+import { webview } from '@kit.ArkWeb';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { AppGraph } from '../app/AppGraph';
+import { UrlLite } from '../domain/UrlLite';
+import { Site } from '../domain/model/Site';
+import { TabList, TabMeta, NewTabResult, DEFAULT_MAX_TABS } from '../domain/TabList';
+import { SaveOutcome } from '../domain/BookmarkService';
+import { CertReminderNotifier } from '../domain/ServerCertReminderService';
+import { HomeView } from '../ui/HomeView';
+import { BrowserWeb } from '../ui/BrowserWeb';
+import { TabSwitcher } from '../ui/TabSwitcher';
+import { SiteEditorDialog } from '../ui/SiteEditorDialog';
+import { ToastNotifier } from '../ui/ToastNotifier';
+import { FullscreenFab } from '../ui/FullscreenFab';
+
+/** 首次导航重试：6 次 × 120ms ≈ 720ms 内 Web 仍未 attach 才判失败 */
+const OPEN_RETRY_LEFT: number = 6;
+const OPEN_RETRY_INTERVAL_MS: number = 120;
+
+/**
+ * 薄控制器（对应 Android MainActivity.kt）：标签管理、主页/浏览切换、返回键、地址栏状态。
+ * 铁律：这里只允许「视图切换 + 状态转发」，标签规则全部在 domain/TabList。
+ *
+ * 渲染策略：Web 组件常驻（Stack + visibility），切换标签不销毁实例，
+ * 滚动位置 / JS 状态 / 表单内容全部保留——与 Android 的「每标签独立 WebView」等价。
+ */
+@Entry
+@Component
+struct Index {
+  /** 标签 id 列表（只存 id，保证 ForEach 组件身份稳定，不因标题变化重建 Web） */
+  @State tabIds: number[] = [];
+  @State currentId: number = -1;
+  /** 元信息版本号：标题/URL 变化时递增，驱动顶栏与概览层刷新 */
+  @State metaVersion: number = 0;
+  @State showHome: boolean = true;
+  @State homeOverlay: boolean = false;
+  @State switcherVisible: boolean = false;
+  @State progress: number = 0;
+  @State address: string = '';
+  /** 用户正在编辑地址栏时不要被页面导航覆盖 */
+  @State addressEditing: boolean = false;
+  @State starred: boolean = false;
+  @State homeTick: number = 0;
+  /** 全屏（沉浸）模式：只隐藏应用顶部操作栏，系统栏不动（与 Android ImmersiveController 同语义） */
+  @State fullscreen: boolean = false;
+  /** Web 区域尺寸：给悬浮按钮做边界钳制 */
+  @State webW: number = 0;
+  @State webH: number = 0;
+  /** 本轮是否已经"退回主页覆盖层"过一次（用于让返回键有终点，不再死循环） */
+  private backHomeOnce: boolean = false;
+
+  private tabList: TabList = new TabList(DEFAULT_MAX_TABS);
+  private controllers: Map<number, webview.WebviewController> = new Map();
+  private editorCtrl: CustomDialogController | null = null;
+  /** 统一 toast 出口（与 BrowserWeb 用同一个实现，避免两套提示风格） */
+  private notifier: CertReminderNotifier | null = null;
+
+  aboutToAppear(): void {
+    this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
+    // 与 Android 一致：只有 lastUrl 的 host 命中已保存的书签才自动恢复，
+    // 且恢复的是书签 URL（站点根），不是任意历史深链。
+    const last = AppGraph.settings().getLastUrl();
+    if (last === null || last === '') {
+      return;
+    }
+    const host = UrlLite.hostOf(last);
+    if (host === null) {
+      return;
+    }
+    const site = AppGraph.siteRepository().byHost(host);
+    if (site === null) {
+      return;
+    }
+    this.openUrl(site.url, false);
+  }
+
+  // ---------- 标签基础设施 ----------
+
+  private controllerOf(id: number): webview.WebviewController {
+    let c = this.controllers.get(id);
+    if (c === undefined) {
+      c = new webview.WebviewController();
+      this.controllers.set(id, c);
+    }
+    return c;
+  }
+
+  /** TabList（纯逻辑）→ UI 状态同步。 */
+  private syncTabs(): void {
+    this.tabIds = this.tabList.all().map((t: TabMeta): number => t.id);
+    this.currentId = this.tabList.currentId();
+    this.metaVersion = this.metaVersion + 1;
+    this.syncAddress();
+  }
+
+  private dropEvicted(evicted: number[]): void {
+    for (const id of evicted) {
+      this.controllers.delete(id);
+    }
+  }
+
+  private syncAddress(): void {
+    const tab = this.tabList.current();
+    // 用户正在输入时不得用页面 URL 覆盖地址栏（Android 用独立输入对话框天然隔离）
+    if (!this.addressEditing) {
+      this.address = tab !== null ? tab.url : '';
+    }
+    this.updateStar();
+  }
+
+  private updateStar(): void {
+    const tab = this.tabList.current();
+    this.starred = tab !== null && tab.url !== '' &&
+      AppGraph.siteRepository().findByUrl(tab.url) !== null;
+  }
+
+  // ---------- 导航 ----------
+
+  /**
+   * 打开地址。
+   * @param reuseCurrent true = 在当前标签加载（书签点击/地址栏提交）；false = 新开标签
+   */
+  private openUrl(raw: string, reuseCurrent: boolean): void {
+    const url = UrlLite.withHttpsPrefix(raw);
+    if (url === '') {
+      return;
+    }
+    // 只接受 http/https：loadUrl('javascript:...') 会在当前页上下文执行，
+    // 而 DomainWhitelist 对非 http(s) 是放行的（它只负责"该域是否允许"，不负责 scheme 安全）。
+    const scheme = UrlLite.schemeOf(url);
+    if (scheme !== 'http' && scheme !== 'https') {
+      this.toast('只支持 http/https 地址');
+      return;
+    }
+    // 前置白名单检查：UI 入口先拦，不发起任何网络（与 Android loadIfAllowed 一致）
+    if (!AppGraph.domainWhitelist().allows(url)) {
+      this.toast('该域名不在允许访问的白名单内');
+      return;
+    }
+    // last_url 只在页面真正加载完成时写（onTabPageEnd），
+    // 否则加载失败/被白名单兜底卸载的地址也会被记成「上次访问」，下次冷启动恢复成打不开的页。
+    const hasCurrent = reuseCurrent && this.tabList.currentId() >= 0;
+    if (hasCurrent) {
+      const id = this.tabList.currentId();
+      // Web 未 attach 时 loadUrl 会抛（新建标签立刻点书签的场景）。
+      // 不靠单次定时碰运气：有界重试，全部失败才提示，别把用户操作吞掉。
+      this.loadWithRetry(id, url, OPEN_RETRY_LEFT);
+    } else {
+      const created: NewTabResult = this.tabList.newTab(url);
+      this.dropEvicted(created.evicted);
+    }
+    // 导航后返回键回到"网页后退优先"的原点
+    this.backHomeOnce = false;
+    const target = this.tabList.currentId();
+    if (target >= 0) {
+      this.tabList.setProgress(target, 0); // 上一次被 abort 的加载进度不得残留
+    }
+    this.showHome = false;
+    this.homeOverlay = false;
+    this.switcherVisible = false;
+    this.progress = 0;
+    this.syncTabs();
+  }
+
+  /**
+   * 在指定标签加载 URL，Web 未 attach 时 index 抛错 → 有界重试。
+   * 重试耗尽才提示，避免「刚建标签就点书签」被一次 80ms 的运气决定成败。
+   */
+  private loadWithRetry(tabId: number, url: string, left: number): void {
+    try {
+      this.controllerOf(tabId).loadUrl(url);
+      return;
+    } catch (e) {
+      if (left <= 0) {
+        hilog.error(0x0001, 'Index', 'loadUrl gave up after retries: %{public}s', JSON.stringify(e));
+        this.toast('页面暂时无法加载，请稍后重试');
+        return;
+      }
+    }
+    setTimeout(() => {
+      this.loadWithRetry(tabId, url, left - 1);
+    }, OPEN_RETRY_INTERVAL_MS);
+  }
+
+  private newTab(): void {
+    const created: NewTabResult = this.tabList.newTab('');
+    this.dropEvicted(created.evicted);
+    this.switcherVisible = false;
+    // 新标签先引导到书签选择（与 Android 一致：空白页 + 主页覆盖层）
+    this.showHome = true;
+    this.homeOverlay = true;
+    this.homeTick = this.homeTick + 1;
+    this.syncTabs();
+  }
+
+  private selectTab(id: number): void {
+    if (this.tabList.select(id)) {
+      this.switcherVisible = false;
+      this.backHomeOnce = false;
+      this.showHome = false;
+      this.homeOverlay = false;
+      // 恢复该标签自己的进度（它可能仍在加载）
+      this.progress = this.tabList.progressOf(id);
+      this.syncTabs();
+    }
+  }
+
+  private closeTab(id: number): void {
+    // 只有关掉的是当前标签才重置进度条，否则会把别的标签正在走的进度掐掉
+    const wasCurrent = id === this.tabList.currentId();
+    const remaining = this.tabList.close(id);
+    this.controllers.delete(id);
+    if (wasCurrent) {
+      this.progress = remaining < 0 ? 0 : this.tabList.progressOf(remaining);
+    }
+    if (remaining < 0) {
+      this.showHome = true;
+      this.homeOverlay = false;
+      this.switcherVisible = false;
+    }
+    this.syncTabs();
+  }
+
+  private closeOthers(id: number): void {
+    const closed = this.tabList.closeOthers(id);
+    for (const cid of closed) {
+      this.controllers.delete(cid);
+    }
+    this.showHome = false;
+    this.switcherVisible = false;
+    this.toast('已关闭其他标签');
+    this.syncTabs();
+  }
+
+  // ---------- 主页/浏览切换 ----------
+
+  private showHomeLayer(): void {
+    this.fullscreen = false;
+    this.showHome = true;
+    // 有会话 → 覆盖层（✕/返回回原页面）；无会话 → 独立主页（返回退出应用）
+    this.homeOverlay = this.tabList.size() > 0;
+    this.homeTick = this.homeTick + 1;
+  }
+
+  private closeHomeOverlay(): void {
+    if (this.tabList.size() === 0) {
+      return;
+    }
+    this.showHome = false;
+    this.homeOverlay = false;
+  }
+
+  private removeSite(site: Site): void {
+    AppGraph.siteRepository().remove(site.id);
+    this.toast('已删除');
+    this.homeTick = this.homeTick + 1;
+  }
+
+  // ---------- 收藏 ----------
+
+  private bookmarkCurrent(): void {
+    const tab = this.tabList.current();
+    if (tab === null || tab.url === '') {
+      this.toast('当前没有可收藏的页面');
+      return;
+    }
+    const existing = AppGraph.siteRepository().findByUrl(tab.url);
+    if (existing !== null) {
+      // 已收藏 → 打开编辑（与 Android 一致）
+      this.showEditor(existing, existing.name, existing.url, '编辑站点');
+    } else {
+      const host = UrlLite.hostOf(tab.url) ?? '';
+      this.showEditor(null, tab.title !== '' ? tab.title : host, tab.url, '收藏');
+    }
+  }
+
+  private showEditor(site: Site | null, initName: string, initUrl: string, titleText: string): void {
+    this.editorCtrl = new CustomDialogController({
+      builder: SiteEditorDialog({
+        titleText: titleText,
+        initName: initName,
+        initUrl: initUrl,
+        submit: (name: string, url: string): void => this.saveSite(site, name, url)
+      }),
+      autoCancel: true
+    });
+    this.editorCtrl.open();
+  }
+
+  private saveSite(original: Site | null, name: string, url: string): void {
+    // 规则全在 domain BookmarkService（与主页「添加/编辑」共用同一实现）
+    const result = AppGraph.bookmarks().save(original, name, url);
+    if (result.outcome === SaveOutcome.EMPTY_URL) {
+      this.toast('地址不能为空');
+      return;
+    }
+    const base = result.outcome === SaveOutcome.SAVED ? '已收藏' : '已保存';
+    this.toast(result.outsideWhitelist ? `${base}（该域名不在白名单，访问会被拦截）` : base);
+    this.updateStar();
+    this.homeTick = this.homeTick + 1;
+  }
+
+  // ---------- 回调 ----------
+
+  private onTabTitle(id: number, title: string): void {
+    this.tabList.rename(id, title);
+    this.metaVersion = this.metaVersion + 1;
+  }
+
+  private onTabPageEnd(id: number, url: string): void {
+    if (url === '' || url === 'about:blank') {
+      return; // 空标签页不写入 tab.url：概览层与地址栏保持占位文案
+    }
+    this.tabList.update(id, url);
+    // 只有当前标签的导航才写 lastUrl / 刷地址栏——后台标签不得抢焦点（Android onCurrentTabUiChanged 语义）
+    if (id === this.tabList.currentId()) {
+      AppGraph.settings().setLastUrl(url);
+      this.syncAddress();
+    }
+    this.metaVersion = this.metaVersion + 1;
+  }
+
+  /** 主框架被白名单拦下、文档已卸载成空白页：清掉旧 URL，地址栏不许继续展示上一个正常页。 */
+  private onTabBlocked(id: number): void {
+    this.tabList.clearUrl(id);
+    if (id === this.tabList.currentId()) {
+      this.progress = 0;
+      this.syncAddress();
+    }
+    this.metaVersion = this.metaVersion + 1;
+  }
+
+  private onTabProgress(id: number, progress: number): void {
+    // 每个标签各自记录进度：切回仍在加载的标签要能恢复进度条（Android attachTab 同语义）
+    this.tabList.setProgress(id, progress);
+    if (id === this.tabList.currentId()) {
+      this.progress = progress;
+    }
+  }
+
+  private toast(message: string): void {
+    this.notifier?.show(message);
+  }
+
+  // ---------- 渲染辅助 ----------
+
+  /** 标签创建时的初始地址：空标签用 about:blank（之后导航一律走 controller.loadUrl）。 */
+  private initialUrlOf(id: number): string {
+    const tab = this.tabList.find(id);
+    if (tab === null || tab.url === '') {
+      return 'about:blank';
+    }
+    return tab.url;
+  }
+
+  /** 概览层快照：读 metaVersion 建立 @State 依赖，保证标题变化后能刷新。 */
+  private tabsSnapshot(): TabMeta[] {
+    // 显式读 metaVersion：在 build 期间建立 @State 依赖，标题/URL 变化后概览层才刷新
+    if (this.metaVersion < 0) {
+      return [];
+    }
+    return this.tabList.all();
+  }
+
+  onBackPress(): boolean {
+    // 返回次序与 Android 一致：退出全屏 → 关标签概览 → 关主页覆盖层 → 网页后退 → 回主页
+    if (this.fullscreen) {
+      this.fullscreen = false;
+      return true;
+    }
+    if (this.switcherVisible) {
+      this.switcherVisible = false;
+      return true;
+    }
+    if (this.showHome) {
+      if (this.homeOverlay) {
+        this.closeHomeOverlay();
+        return true;
+      }
+      return false; // 独立主页：交给系统退出
+    }
+    // 浏览中：先网页后退，退无可退回主页覆盖层；再按一次则退出应用（与 Android 同终点）
+    if (this.currentId < 0) {
+      this.showHomeLayer();
+      return true;
+    }
+    try {
+      const ctrl = this.controllerOf(this.currentId);
+      if (ctrl.accessBackward()) {
+        ctrl.backward();
+        this.backHomeOnce = false;
+        return true;
+      }
+    } catch (e) {
+      // controller 未 attach
+    }
+    if (this.backHomeOnce) {
+      // 已经回过一次主页覆盖层、用户又从覆盖层回到浏览态且仍无后退历史 → 交给系统退出。
+      // 少了这一句就是一个死循环：回主页 → 关覆盖层 → 又回主页，永远退不出应用。
+      return false;
+    }
+    this.backHomeOnce = true;
+    this.showHomeLayer();
+    return true;
+  }
+
+  build() {
+    Stack() {
+      // ---------- 浏览层 ----------
+      Column() {
+        // 顶部操作栏：全屏时整条隐藏（对应 Android ImmersiveController 的 bars）
+        if (!this.fullscreen) {
+          Row() {
+            Image($r('app.media.ic_home'))
+              .width(32)
+              .height(32)
+              .padding(7)
+              .onClick(() => this.showHomeLayer())
+            TextInput({ text: this.address, placeholder: '输入网址' })
+              .layoutWeight(1)
+              .height(34)
+              .fontSize(14)
+              .fontColor('#1F1F1F')
+              .placeholderColor('#9AA0A6')
+              .backgroundColor('#F2F3F5')
+              .borderRadius(9)
+              .padding({ left: 10, right: 10 })
+              .onEditChange((isEditing: boolean) => {
+                this.addressEditing = isEditing;
+              })
+              .onChange((v: string) => {
+                this.address = v;
+              })
+              .onSubmit(() => {
+                this.addressEditing = false;
+                this.openUrl(this.address, true);
+              })
+            Image($r('app.media.ic_refresh'))
+              .width(32)
+              .height(32)
+              .padding(7)
+              .onClick(() => {
+                try {
+                  this.controllerOf(this.currentId).refresh();
+                } catch (e) {
+                  // Web 尚未创建
+                }
+              })
+            Image(this.starred ? $r('app.media.ic_star_on') : $r('app.media.ic_star'))
+              .width(32)
+              .height(32)
+              .padding(7)
+              .onClick(() => this.bookmarkCurrent())
+            Stack({ alignContent: Alignment.TopEnd }) {
+              Image($r('app.media.ic_tabs'))
+                .width(32)
+                .height(32)
+                .padding(7)
+              Text(`${this.tabIds.length}`)
+                .fontSize(9)
+                .fontColor(Color.White)
+                .backgroundColor('#1F1F1F')
+                .borderRadius(7)
+                .width(14)
+                .height(14)
+                .textAlign(TextAlign.Center)
+            }
+            .width(34)
+            .height(34)
+            .onClick(() => {
+              this.switcherVisible = !this.switcherVisible;
+            })
+          }
+          .width('100%')
+          .padding({ left: 4, right: 4, top: 6, bottom: 6 })
+          .backgroundColor(Color.White)
+          .alignItems(VerticalAlign.Center)
+
+          Divider()
+            .color('#EDEDED')
+            .strokeWidth(0.5)
+        }
+
+        if (this.progress > 0 && this.progress < 100) {
+          Progress({ value: this.progress, total: 100, type: ProgressType.Linear })
+            .width('100%')
+            .height(2)
+            .color('#1F1F1F')
+        }
+
+        Stack({ alignContent: Alignment.TopStart }) {
+          ForEach(this.tabIds, (id: number) => {
+            BrowserWeb({
+              tabId: id,
+              controller: this.controllerOf(id),
+              initialUrl: this.initialUrlOf(id),
+              onProgress: (tabId: number, p: number): void => this.onTabProgress(tabId, p),
+              onTitle: (tabId: number, t: string): void => this.onTabTitle(tabId, t),
+              onPageEnd: (tabId: number, u: string): void => this.onTabPageEnd(tabId, u),
+              onBlocked: (tabId: number): void => this.onTabBlocked(tabId)
+            })
+              .visibility(id === this.currentId ? Visibility.Visible : Visibility.None)
+          }, (id: number): string => id.toString())
+
+          // 悬浮全屏按钮：可拖动、位置记忆、边界钳制（几何规则在 domain/FabGeometry）
+          FullscreenFab({
+            fullscreen: this.fullscreen,
+            containerW: this.webW,
+            containerH: this.webH,
+            onToggle: (): void => {
+              this.fullscreen = !this.fullscreen;
+            }
+          })
+        }
+        .width('100%')
+        .layoutWeight(1)
+        .onAreaChange((oldValue: Area, newValue: Area) => {
+          this.webW = parseFloat(String(newValue.width));
+          this.webH = parseFloat(String(newValue.height));
+        })
+      }
+      .width('100%')
+      .height('100%')
+      .visibility(this.showHome ? Visibility.None : Visibility.Visible)
+
+      // ---------- 主页层（独立或覆盖） ----------
+      if (this.showHome) {
+        HomeView({
+          tick: this.homeTick,
+          overlayMode: this.homeOverlay,
+          onClose: (): void => this.closeHomeOverlay(),
+          openSite: (url: string): void => this.openUrl(url, true),
+          removeSite: (site: Site): void => this.removeSite(site)
+        })
+      }
+
+      // ---------- 标签概览 ----------
+      if (this.switcherVisible) {
+        TabSwitcher({
+          tabs: this.tabsSnapshot(),
+          currentId: this.currentId,
+          onSelect: (id: number): void => this.selectTab(id),
+          onClose: (id: number): void => this.closeTab(id),
+          onCloseOthers: (id: number): void => this.closeOthers(id),
+          onNew: (): void => this.newTab(),
+          onDismiss: (): void => {
+            this.switcherVisible = false;
+          }
+        })
+      }
+    }
+    .width('100%')
+    .height('100%')
+  }
+}
