@@ -79,7 +79,7 @@ entry/src/main/ets/
 - **`saveFormData=false`**：ArkWeb 无对应开关。
 - **标签内存成本**：Android 8 个 WebView 尚可，ArkWeb 同规模风险更高，故上限取 4。
 - **按 keyTypes/principals 过滤客户端证书**：`certificateManagerDialog.openAuthorizeDialog` 没有这两个入参，安卓 KeyChooser 的过滤能力无对应物，用户可能选到服务端不接受的证书（靠 400 清理兜底）。
-- **SSL 错误无法定位到具体子资源**：`OnSslErrorEventReceiveEvent` 不带 URL，只能按当前主页 host 归因；取不到 host 时直接拒绝（不放行）。
+- **~~SSL 错误无法定位到具体子资源~~（已解除）**：早期用 `onSslErrorEventReceive`（不带 URL）只能按当前主页 host 归因。现在改用 `onSslErrorEvent`，事件自带 `url` / `originalUrl` / `isMainFrame` / `isFatalError` / `certChainData`，主框架与子资源的证书错误可以精确区分，不再需要「主文档是否已提交」的猜测。
 
 ## 安全边界（本轮明确过的几条）
 
@@ -88,7 +88,7 @@ entry/src/main/ets/
 3. **备份能力未接入（有意）**：module.json5 里没有 `type: "backup"` 的 `extensionAbilities`，`backup_config.json` 也没有——所以系统备份根本不会带上本应用数据（这是真正的保证，不是靠配置里的 `allowToBackupRestore`）。preferences 里有书签、按站点的证书 keyUri、lastUrl，不该随云备份外流；单用户自托管工具也没有跨端恢复需求。**若将来要接备份，必须保持 `allowToBackupRestore: false` 并把 preferences 排除在外。**
 4. **凭据只存引用**：客户端私钥/证书本身在系统凭据库，应用侧只存 `keyUri`，且不写 hilog（host 目前以 `%{public}s` 打印，仅本机日志，release 前应收紧）。
 5. **SSL 放行永不静默，且白名单外直接 DENY**：策略三分支（PROCEED/ASK_USER/DENY）。非白名单站点的证书错误连「仍要继续」的机会都没有（`DefaultSslTrustPolicy` 依赖 `DomainWhitelist`）。会话豁免仅内存、仅该 host、仅本次运行。
-6. **证书错误归因保守**：ArkWeb 的 SSL 事件不带 URL。主文档已加载完才报的证书错误一律按子资源处理 → 直接 `cancel`，不弹框、不授豁免（否则第三方端点的坏证书会给整站换来免检）。
+6. **证书错误按帧归因，绝不静默放行**：用 `onSslErrorEvent`（自带 `url` + `isMainFrame`）。子框架/子资源 → 直接 `cancel`，不弹框、不授豁免（否则第三方端点的坏证书会给整站换来免检）；主框架 → 走 domain 三分支策略，host 取自本次出错请求的 `url`，取不到就拒绝。**不要退回 `controller.getUrl()` 或「主文档是否已提交」这套猜测**：前者在主框架 TLS 失败时返回的是上一个已提交文档，会「弹框写 A 站、实际放行 B 站」。
 7. **客户端证书只发给白名单站点**：`onClientAuthenticationRequest` 的来源 host 不在白名单时直接 `ignore()`，防止白名单页面里嵌的第三方 iframe 骗取私钥使用授权。
 8. **400 清理必须先有 mTLS 事实**：只有本标签确实在该 host 完成过客户端证书握手，才允许销毁用户的证书绑定；`clearClientAuthenticationCache` 不可用时提示词会如实降级。
 
