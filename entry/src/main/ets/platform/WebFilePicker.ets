@@ -20,12 +20,10 @@ export class WebFilePicker {
    * 拉起系统文件选择器。
    * @returns 选中的文件 URI 列表；用户取消返回空数组（调用方仍需回传内核）。
    */
-  static async pick(context: common.UIAbilityContext, param: FileSelectorParam): Promise<string[]> {
-    const mode = param.getMode();
-    const multiple = mode === FileSelectorMode.FileOpenMultipleMode;
+  static async pick(context: common.UIAbilityContext, acceptTypes: string[], multiple: boolean): Promise<string[]> {
     const options = new picker.DocumentSelectOptions();
     options.maxSelectNumber = multiple ? 20 : 1;
-    const filters = suffixFilters(param.getAcceptType());
+    const filters = suffixFilters(acceptTypes);
     if (filters.length > 0) {
       options.fileSuffixFilters = filters;
     }

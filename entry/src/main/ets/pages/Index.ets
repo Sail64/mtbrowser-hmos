@@ -48,6 +48,10 @@ struct Index {
   @State webH: number = 0;
   /** 本轮是否已经"退回主页覆盖层"过一次（用于让返回键有终点，不再死循环） */
   private backHomeOnce: boolean = false;
+  /** 已真正加载过页面的标签（恢复出来的后台标签是空白占位，选中时才加载） */
+  private loadedTabs: Set<number> = new Set();
+  /** persistTabs 节流时间戳（pageEnd 可能很密集，不必每次都写 preferences） */
+  private lastPersistAt: number = 0;
 
   private tabList: TabList = new TabList(DEFAULT_MAX_TABS);
   private controllers: Map<number, webview.WebviewController> = new Map();
@@ -57,15 +61,26 @@ struct Index {
 
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
+    // 内核下载委托全局注册一次（下载走内核栈才继承 mTLS/证书豁免）
+    AppGraph.installDownloader(this.notifier);
     // 恢复上次的会话：把所有还开着的标签一起恢复，而不是退回单一首页
     // （用户抱怨过"每次被杀掉再启动都跑到 8443 那个"）。
     const savedTabs = AppGraph.settings().getOpenTabs();
-    if (savedTabs.length > 0) {
+    // 全是空标签（用户把标签都清空了）时不该恢复成"4 个空白页且回不到主页"，
+    // 直接走下面的旧逻辑（多半也没有 lastUrl，最终停在主页）。
+    let hasAnyUrl = false;
+    for (const u of savedTabs) {
+      if (u !== '') {
+        hasAnyUrl = true;
+        break;
+      }
+    }
+    if (savedTabs.length > 0 && hasAnyUrl) {
       const wl = AppGraph.domainWhitelist();
       let restoredAny = false;
       for (const u of savedTabs) {
-        // 恢复前过一遍白名单：名单可能已经被改小，脏 URL 恢复出来只会变成一屏"已拦截"
-        if (u !== '' && !wl.allows(u)) {
+        // 恢复前过一遍白名单 + scheme 闸门：名单可能已被改小，脏 URL 恢复出来只会变成一屏"已拦截"
+        if (u !== '' && (!wl.allows(u) || !Index.isRestorableUrl(u))) {
           continue;
         }
         const created: NewTabResult = this.tabList.newTab(u);
@@ -121,8 +136,23 @@ struct Index {
     this.persistTabs();
   }
 
+  /** 节流版写盘：pageEnd / blocked 这类高频事件走它，1.5s 内最多写一次。 */
+  private persistTabsThrottled(): void {
+    if (Date.now() - this.lastPersistAt < 1500) {
+      return;
+    }
+    this.persistTabs();
+  }
+
+  /** 只有 http/https 的 URL 才允许从偏好里恢复（与 openUrl 的 scheme 闸门同一条规则）。 */
+  private static isRestorableUrl(url: string): boolean {
+    const scheme = UrlLite.schemeOf(url);
+    return scheme === 'http' || scheme === 'https';
+  }
+
   /** 把当前标签集合写盘，供下次冷启动恢复（被杀掉也不丢会话）。 */
   private persistTabs(): void {
+    this.lastPersistAt = Date.now();
     const all = this.tabList.all();
     if (all.length === 0) {
       AppGraph.settings().setOpenTabs([], 0);
@@ -244,6 +274,12 @@ struct Index {
       this.backHomeOnce = false;
       this.showHome = false;
       this.homeOverlay = false;
+      // 恢复出来的后台标签是"空白占位"：第一次被选中时才真正加载
+      const tab = this.tabList.find(id);
+      if (tab !== null && tab.url !== '' && !this.loadedTabs.has(id)) {
+        this.loadedTabs.add(id);
+        this.loadWithRetry(id, tab.url, OPEN_RETRY_LEFT);
+      }
       // 恢复该标签自己的进度（它可能仍在加载）
       this.progress = this.tabList.progressOf(id);
       this.syncTabs();
@@ -357,6 +393,10 @@ struct Index {
       return; // 空标签页不写入 tab.url：概览层与地址栏保持占位文案
     }
     this.tabList.update(id, url);
+    this.loadedTabs.add(id);
+    // 导航完成才是"这个标签现在是什么地址"的真相：不在这里写盘，
+    // 恢复时会拿到创建时的旧 URL（新标签甚至是空串）。
+    this.persistTabsThrottled();
     // 只有当前标签的导航才写 lastUrl / 刷地址栏——后台标签不得抢焦点（Android onCurrentTabUiChanged 语义）
     if (id === this.tabList.currentId()) {
       AppGraph.settings().setLastUrl(url);
@@ -368,6 +408,8 @@ struct Index {
   /** 主框架被白名单拦下、文档已卸载成空白页：清掉旧 URL，地址栏不许继续展示上一个正常页。 */
   private onTabBlocked(id: number): void {
     this.tabList.clearUrl(id);
+    this.loadedTabs.delete(id);
+    this.persistTabsThrottled();
     if (id === this.tabList.currentId()) {
       this.progress = 0;
       this.syncAddress();
@@ -389,8 +431,13 @@ struct Index {
 
   // ---------- 渲染辅助 ----------
 
-  /** 标签创建时的初始地址：空标签用 about:blank（之后导航一律走 controller.loadUrl）。 */
+  /** 标签创建时的初始地址：只有当前标签立即加载，后台标签等被选中再加载。 */
   private initialUrlOf(id: number): string {
+    if (id !== this.tabList.currentId()) {
+      // 冷启动恢复多个标签时，4 个 Web 一起挂载会同时发起 4 个导航（mTLS 站点会连着弹
+      // 证书选择框，后台标签的错误 toast 也会弹到前台）。后台标签先留空白，选中时再加载。
+      return 'about:blank';
+    }
     const tab = this.tabList.find(id);
     if (tab === null || tab.url === '') {
       return 'about:blank';

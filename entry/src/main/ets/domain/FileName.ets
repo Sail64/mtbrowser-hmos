@@ -44,8 +44,9 @@ export function sanitizeFileName(raw: string): string {
   if (slash >= 0) {
     name = name.substring(slash + 1);
   }
-  // 控制字符（含 NUL、换行）一律剔除
-  name = name.replace(/[\u0000-\u001f\u007f]/g, '');
+  // 控制字符 + 双向文本控制符（U+202A–U+202E / U+2066–U+2069）：
+  // 后者能让「发票\u202Eexe.txt」在提示里显示成 txt，也能让路径判定和显示不一致，一律剔除。
+  name = name.replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, '');
   // 去掉前导点：`.`、`..`、`..hidden` 都变成安全名字
   while (name.startsWith('.')) {
     name = name.substring(1);
@@ -54,12 +55,39 @@ export function sanitizeFileName(raw: string): string {
   if (name === '') {
     return '';
   }
-  if (name.length > 120) {
+  // 按 **字节** 限长：文件系统 NAME_MAX 是 255 字节，中文一个字 3 字节，
+  // 按字符数限 120 会让 86 个汉字直接超限（下载时报 13400002）。
+  const MAX_BYTES = 200;
+  if (utf8Bytes(name) > MAX_BYTES) {
     const dot = name.lastIndexOf('.');
     const ext = dot > 0 && name.length - dot <= 10 ? name.substring(dot) : '';
-    name = name.substring(0, 120 - ext.length) + ext;
+    const stemBudget = MAX_BYTES - utf8Bytes(ext);
+    let stem = name.substring(0, dot > 0 ? dot : name.length);
+    while (stem.length > 0 && utf8Bytes(stem) > stemBudget) {
+      stem = stem.substring(0, stem.length - 1);
+    }
+    name = stem + ext;
   }
   return name;
+}
+
+/** UTF-8 字节数（domain 里不依赖 TextEncoder，手算即可）。 */
+function utf8Bytes(s: string): number {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x80) {
+      n += 1;
+    } else if (c < 0x800) {
+      n += 2;
+    } else if (c >= 0xd800 && c <= 0xdbff) {
+      n += 4; // 代理对：本字符 + 下一个，按 4 字节算一次
+      i++;
+    } else {
+      n += 3;
+    }
+  }
+  return n;
 }
 
 /**

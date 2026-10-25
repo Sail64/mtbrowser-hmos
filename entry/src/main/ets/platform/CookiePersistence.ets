@@ -1,5 +1,6 @@
 import { webview } from '@kit.ArkWeb';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 import { UrlLite } from '../domain/UrlLite';
 
 const DOMAIN = 0x0001;
@@ -52,24 +53,34 @@ export class CookiePersistence {
     if (url === '' || url === 'about:blank') {
       return;
     }
+    const host = UrlLite.hostOf(url);
+    let raw = '';
     try {
-      const raw = webview.WebCookieManager.fetchCookieSync(url);
-      const host = UrlLite.hostOf(url);
-      const names: string[] = [];
-      if (raw !== '') {
-        for (const part of raw.split(';')) {
-          const eq = part.indexOf('=');
-          const name = (eq > 0 ? part.substring(0, eq) : part).trim();
-          if (name !== '') {
-            names.push(name);
-          }
+      raw = webview.WebCookieManager.fetchCookieSync(url);
+    } catch (e) {
+      // 17100002 = 该 URL 没有任何 cookie：这是"空"，不是"异常"。
+      // 混成错误日志会让诊断结论完全反过来（看起来像 cookie 系统坏了）。
+      const err = e as BusinessError;
+      if (err !== undefined && err.code === 17100002) {
+        hilog.info(DOMAIN, TAG, 'cookie[%{public}s] host=%{public}s n=0 (no cookie)',
+          when, host === null ? '?' : host);
+        return;
+      }
+      hilog.error(DOMAIN, TAG, 'fetchCookieSync failed: %{public}s', JSON.stringify(e));
+      return;
+    }
+    const names: string[] = [];
+    if (raw !== '') {
+      for (const part of raw.split(';')) {
+        const eq = part.indexOf('=');
+        const name = (eq > 0 ? part.substring(0, eq) : part).trim();
+        if (name !== '') {
+          names.push(name);
         }
       }
-      // 只打名字和长度：值里是会话令牌，绝不落日志
-      hilog.info(DOMAIN, TAG, 'cookie[%{public}s] host=%{public}s n=%{public}d names=%{public}s len=%{public}d',
-        when, host === null ? '?' : host, names.length, names.join(','), raw.length);
-    } catch (e) {
-      hilog.error(DOMAIN, TAG, 'fetchCookieSync failed: %{public}s', JSON.stringify(e));
     }
+    // 只打名字和长度：值里是会话令牌，绝不落日志
+    hilog.info(DOMAIN, TAG, 'cookie[%{public}s] host=%{public}s n=%{public}d names=%{public}s len=%{public}d',
+      when, host === null ? '?' : host, names.length, names.join(','), raw.length);
   }
 }

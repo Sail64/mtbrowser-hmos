@@ -285,7 +285,9 @@ ok(sanitizeFileName('..\\..\\win.ini') === 'win.ini', 'filename strips windows t
 ok(sanitizeFileName('/abs/path/a.pdf') === 'a.pdf', 'filename strips leading dirs');
 ok(sanitizeFileName('a\u0000b\n.txt') === 'ab.txt', 'filename strips control chars');
 ok(sanitizeFileName('..') === '' && sanitizeFileName('.hidden') === 'hidden', 'filename dot handling');
-ok(sanitizeFileName('x'.repeat(300)).length === 120, 'filename capped to 120');
+ok(sanitizeFileName('x'.repeat(300)).length <= 200, 'filename ascii capped');
+ok(sanitizeFileName('发'.repeat(100)).length < 100, 'filename cjk capped by bytes');
+ok(sanitizeFileName('发票\u202Eexe.txt') === '发票exe.txt', 'filename strips bidi override');
 ok(fileNameFrom('attachment; filename="report.pdf"', 'https://h/x', 'application/pdf') === 'report.pdf', 'cd plain');
 ok(fileNameFrom("attachment; filename*=UTF-8''%E4%B8%AD%E6%96%87.pdf", 'https://h/x', 'application/pdf') === '中文.pdf', 'cd rfc5987');
 ok(fileNameFrom('', 'https://h/dir/file.zip?sig=1', 'application/zip') === 'file.zip', 'url basename');

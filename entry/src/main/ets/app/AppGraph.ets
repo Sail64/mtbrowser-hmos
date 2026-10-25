@@ -20,6 +20,8 @@ import { SettingsStore } from '../data/SettingsStore';
 import { CertManagerClientCertSelector } from '../platform/CertManagerClientCertSelector';
 import { BookmarkService } from '../domain/BookmarkService';
 import { CookiePersistence } from '../platform/CookiePersistence';
+import { WebFilePicker } from '../platform/WebFilePicker';
+import { KernelDownloader } from '../platform/KernelDownloader';
 
 const WHITELIST_FILE = 'domain_whitelist.txt';
 
@@ -39,6 +41,8 @@ export class AppGraph {
   private static _domainWhitelist: DomainWhitelist | undefined = undefined;
   private static _settings: SettingsStore | undefined = undefined;
   private static _bookmarks: BookmarkService | undefined = undefined;
+  /** 组合根持有 UIAbilityContext：platform 适配器要它（文件选择、下载目录） */
+  private static _context: common.UIAbilityContext | undefined = undefined;
 
   /** EntryAbility.onCreate 调用。重复调用无副作用（幂等）。 */
   static init(context: common.UIAbilityContext): void {
@@ -47,6 +51,7 @@ export class AppGraph {
     }
     const advisor = new DefaultCertificateAdvisor();
     AppGraph._certAdvisor = advisor;
+    AppGraph._context = context;
 
     // 白名单必须先于 SSL 策略装配：策略要按白名单决定 DENY / ASK_USER
     const whitelist = new DomainWhitelist();
@@ -149,6 +154,20 @@ export class AppGraph {
   /** 诊断：打印 cookie 数量（不含内容），用于判断登录态是否真的落盘/读回。 */
   static reportCookies(url: string, when: string): void {
     CookiePersistence.report(url, when);
+  }
+
+  /**
+   * 网页 <input type=file> 的文件选择。
+   * 走组合根而不是让 ui 直接 import platform：铁律 #4「ui 只经 AppGraph 拿实现」。
+   */
+  static pickFiles(acceptTypes: string[], multiple: boolean): Promise<string[]> {
+    return WebFilePicker.pick(AppGraph.ensure(AppGraph._context, 'context'), acceptTypes, multiple);
+  }
+
+  /** 内核下载委托：全局注册一次（下载必须走内核栈，才继承 mTLS/证书豁免）。 */
+  static installDownloader(notifier: CertReminderNotifier): void {
+    KernelDownloader.install(AppGraph.ensure(AppGraph._context, 'context'),
+      AppGraph.domainWhitelist(), notifier);
   }
 
   /**

@@ -9,7 +9,7 @@ Android 版 `code/mtbrowser` 的 HarmonyOS NEXT 移植。
 
 **已实现但只在编译/静态层验证，尚未上真机**：多标签（LRU 4）与概览层、加载进度条、标题同步、收藏完整流程、HTTP 400 证书清理、302 重定向白名单兜底、SPA pushState URL 同步、危险 scheme 拦截。
 
-**未做**：文件上传、下载、沉浸式全屏 + 浮动按钮、状态恢复、书签跨端导入。缺口清单与顺序见本文件末节。
+**未做**：状态栏染色（页面背景色联动）、书签跨端导入。缺口清单与顺序见本文件末节。
 
 ## 构建与检查命令（无头，不依赖 IDE）
 
@@ -68,8 +68,8 @@ entry/src/main/ets/
 ## 扩展位（MVP 故意不做，接口已预留）
 
 - **多标签**：`domain/TabList.ets`（纯逻辑，冒烟断言见 `sh tools/domain-smoke.sh`）+ `ui/BrowserWeb.ets`（每标签一实例）+ `ui/TabSwitcher.ets`（概览层）。Web 组件常驻于 `Stack`，切换只改 `visibility`，滚动/JS/表单状态全保留。**上限 4**（ArkWeb 每标签一个渲染实例，比 Android WebView 更吃内存；改大前先实测）。
-- **下载**：`onDownloadStart` 未挂；挂时经新 `platform/DownloadAdapter.ets`（ArkWeb `setDownloadDelegate` + `WebDownloadItem.start(path)`），决策（存哪、命名）在 domain。
-- **文件上传**：`onShowFileSelector` 未挂；鸿蒙侧走 `photoAccessHelper` / `documentViewPicker` 选文件后回填 `FileSelectorResult`。
+- **下载**：走**内核下载栈**（`WebDownloadManager.setDownloadDelegate` + `WebDownloadItem.start(path)`，见 `platform/KernelDownloader`）。不能用 `@ohos.request.downloadFile`：那是系统下载服务自己的网络栈，拿不到本应用选定的客户端证书、也不继承 SSL 豁免，mTLS 站点必然失败；而且它的 Promise 只代表"任务已创建"，不是下载完成。白名单与大小上限在 `onBeforeDownload` 里判，文件名规则在 `domain/FileName`。
+- **文件上传**：`onShowFileSelector` → `platform/WebFilePicker`（`DocumentViewPicker`，accept 翻译规则在 `domain/AcceptTypes`；**取消也必须 `handleFileList([])`**，否则该 file input 永久挂起）。
 - **全屏 FAB**：`data/SettingsStore` 通用键值可直接存 FAB 位置。
 - **旁路证书探测**：`ProbeThrottle` 端口已平移；现用 ArkWeb 内建 `getCertificate()`（比 Android 的旁路连接更准——那条连接不带客户端证书，mTLS 站点必失败）。
 

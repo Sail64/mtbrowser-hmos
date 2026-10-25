@@ -7,9 +7,6 @@ import { NavigationDecision } from '../domain/model/CertModels';
 import { SslDecisionKind } from '../domain/SslTrustPolicy';
 import { sslErrorLabel } from '../domain/SslErrorLabels';
 import { ServerCertReminderService, CertReminderNotifier } from '../domain/ServerCertReminderService';
-import { WebFilePicker } from '../platform/WebFilePicker';
-import { DownloadSaver, DownloadOutcome } from '../platform/DownloadSaver';
-import { CookiePersistence } from '../platform/CookiePersistence';
 import { ToastNotifier } from './ToastNotifier';
 
 /**
@@ -71,6 +68,8 @@ export struct BrowserWeb {
   private sslHostsShown: Set<string> = new Set();
   /** 本轮导航是否已提示过加载失败（避免错误风暴刷屏） */
   private loadErrorNotified: boolean = false;
+  /** 文件选择器是否已拉起（重入闸：picker 打开期间不允许再起一个） */
+  private filePicking: boolean = false;
 
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
@@ -85,11 +84,24 @@ export struct BrowserWeb {
       showingSslHosts.delete(h);
     }
     this.sslHostsShown.clear();
-    CookiePersistence.flush();
+    AppGraph.persistCookies(true);
   }
 
   private toast(message: string): void {
     this.notifier?.show(message);
+  }
+
+  /**
+   * 回传文件选择结果给内核。
+   * 必须每次都回（取消回空数组），否则该 file input 会永久挂起、再点没反应；
+   * 标签已被关掉时 handler 可能已失效，所以两层都包 try。
+   */
+  private deliverFiles(result: FileSelectorResult, uris: string[]): void {
+    try {
+      result.handleFileList(uris);
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'handleFileList failed (page gone?): %{public}s', JSON.stringify(e));
+    }
   }
 
   private openExternal(url: string): void {
@@ -382,35 +394,24 @@ export struct BrowserWeb {
       })
       .onShowFileSelector((event: OnShowFileSelectorEvent): boolean => {
         // 网页里的 <input type="file">（LibreChat 附件、Hermes 上传都走这里）
-        const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-        WebFilePicker.pick(ctx, event.fileSelector)
+        if (this.filePicking) {
+          // picker 已经开着：再点一次 input 不再拉起第二个，但也不能把内核晾着
+          this.deliverFiles(event.result, []);
+          return true;
+        }
+        this.filePicking = true;
+        const multiple = event.fileSelector.getMode() === FileSelectorMode.FileOpenMultipleMode;
+        AppGraph.pickFiles(event.fileSelector.getAcceptType(), multiple)
           .then((uris: string[]) => {
-            // 取消也必须回传空数组，否则内核侧 file input 会一直挂着，再点无反应
-            event.result.handleFileList(uris);
+            this.filePicking = false;
+            this.deliverFiles(event.result, uris);
           })
           .catch((e: Error) => {
+            this.filePicking = false;
             hilog.error(DOMAIN, TAG, 'file selector failed: %{public}s', JSON.stringify(e));
-            event.result.handleFileList([]);
+            this.deliverFiles(event.result, []);
           });
         return true; // 已接管
-      })
-      .onDownloadStart((event: OnDownloadStartEvent): void => {
-        const ctx = this.getUIContext().getHostContext() as common.UIAbilityContext;
-        let cookie = '';
-        try {
-          cookie = webview.WebCookieManager.fetchCookieSync(event.url);
-        } catch (e) {
-          cookie = '';
-        }
-        this.toast('开始下载…');
-        DownloadSaver.save(ctx, event.url, event.contentDisposition, event.mimetype, cookie, event.userAgent)
-          .then((out: DownloadOutcome) => {
-            this.toast(out.detail);
-          })
-          .catch((e: Error) => {
-            hilog.error(DOMAIN, TAG, 'download failed: %{public}s', JSON.stringify(e));
-            this.toast('下载失败');
-          });
       })
       .onErrorReceive((event?: OnErrorReceiveEvent): void => {
         if (event === undefined) {
@@ -469,8 +470,8 @@ export struct BrowserWeb {
         this.reminderService?.onPageEnd(url);
         // 登录/会话 cookie 在这里写盘：SPA 登录后常有一次跳转或刷新，
         // 不落盘的话进程被杀就丢登录态。
-        CookiePersistence.save();
-        CookiePersistence.report(url, 'pageEnd');
+        AppGraph.persistCookies(false);
+        AppGraph.reportCookies(url, 'pageEnd');
       })
       .onPageBegin((event?: OnPageBeginEvent): void => {
         // 新一次主框架导航开始：提交前都不算 committed
