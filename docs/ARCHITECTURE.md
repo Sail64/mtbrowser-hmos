@@ -5,7 +5,7 @@
 
 Android 版 `code/mtbrowser` 的 HarmonyOS NEXT 移植。
 
-**真机验证过（HarmonyOS 7.0 / API 26）**：书签主页增删、单标签浏览、mTLS 客户端证书握手（`a.example.com:8443` 实测 200）、SSL 错误弹窗放行、服务端证书过期提醒、域名白名单拦截、Hermes WebUI（SPA）正常交互。
+**真机验证过（HarmonyOS 7.0 / API 26）**：书签主页增删、单标签浏览、mTLS 客户端证书握手（自建 mTLS 站点实测 200）、SSL 错误弹窗放行、服务端证书过期提醒、域名白名单拦截、SPA 站点（pushState 路由）正常交互。
 
 **已实现但只在编译/静态层验证，尚未上真机**：多标签（LRU 4）与概览层、加载进度条、标题同步、收藏完整流程、HTTP 400 证书清理、302 重定向白名单兜底、SPA pushState URL 同步、危险 scheme 拦截。
 
@@ -110,10 +110,11 @@ entry/src/main/ets/
 
 ## 已知平台风险（真机验证项，别当已知工作）
 
-- ✅ **mTLS 已真机验证**（HarmonyOS 7.0 / API 26 / 站点 `https://a.example.com:8443`）：`onClientAuthenticationRequest` → `openAuthorizeDialog` → `confirm(keyUri)` → 200。
+- ✅ **mTLS 已真机验证**（HarmonyOS 7.0 / API 26 / 站点 `https://mtsite.example.com`）：`onClientAuthenticationRequest` → `openAuthorizeDialog` → `confirm(keyUri)` → 200。
 - ✅ **HKDF 无关，但证书容器有坑**：老 Android 兼容的 `-legacy -keypbe PBE-SHA1-3DES -macalg sha1` 容器在鸿蒙装不上；用 `-keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256` 重打包即可（证书与私钥不变）。
 - ⚠️ **安装入口别走「文件管理」**：卓易通（安卓容器）会抢注 `.p12` 处理器，崩出 `Exception Happen / Thread[main,5,main]`（Java 线程签名，非 ArkTS）。必须走 设置 → 证书管理 → 从存储设备安装 → **用户凭据**。
-- ⚠️ **待验证**：4 个常驻 Web 的内存表现；`visibility(None)` 切回后是否掉帧/白屏。
+- ⚠️ **`visibility(Visibility.None)` 切回后必须延迟再导航**（实测结论，非待验证项）：后台标签的 Web 组件从隐藏变可见的**同一帧**发 `loadUrl`，内核会立刻 `ERR_ABORTED(-3)` 掐掉这次导航，页面永远停在 `about:blank`；而地址栏显示的是 `tab.url`（真的），表现为「地址栏有 URL、怎么刷新都白」。正确做法是首次导航由 Web 组件自己监听"变为可见"后延迟 ~250ms 补发，父层不要隔空点隐藏标签的 controller。
+- ⚠️ **待验证**：4 个常驻 Web 的内存表现。
 
 ## 移植缺口清单（对照 Android，按里程碑）
 
