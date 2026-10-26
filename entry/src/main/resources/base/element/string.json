@@ -2,15 +2,15 @@
   "string": [
     {
       "name": "module_desc",
-      "value": "module description"
+      "value": "轻量 mTLS 书签浏览器"
     },
     {
       "name": "EntryAbility_desc",
-      "value": "description"
+      "value": "以书签为中心的 mTLS 浏览器"
     },
     {
       "name": "EntryAbility_label",
-      "value": "label"
+      "value": "MT浏览器"
     }
   ]
 }
