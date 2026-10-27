@@ -116,6 +116,23 @@ entry/src/main/ets/
 - ⚠️ **`visibility(Visibility.None)` 切回后必须延迟再导航**（实测结论，非待验证项）：后台标签的 Web 组件从隐藏变可见的**同一帧**发 `loadUrl`，内核会立刻 `ERR_ABORTED(-3)` 掐掉这次导航，页面永远停在 `about:blank`；而地址栏显示的是 `tab.url`（真的），表现为「地址栏有 URL、怎么刷新都白」。正确做法是首次导航由 Web 组件自己监听"变为可见"后延迟 ~250ms 补发，父层不要隔空点隐藏标签的 controller。
 - ⚠️ **待验证**：4 个常驻 Web 的内存表现。
 
+## 应用名 / 图标（改了一定要 bump versionCode）
+
+应用名在配置里有**两个来源，必须同时改、且保持一致**，否则不同系统界面会显示不同名字：
+
+| 配置 | 资源 | 影响哪里 |
+|---|---|---|
+| `AppScope/app.json5` → `app.label` | `AppScope/.../string.json` → `app_name` | **系统级**：设置 → 应用和服务列表、权限弹窗、通知抬头、以及鸿蒙 7 状态栏左上角「快捷返回前应用」 |
+| `entry/src/main/module.json5` → `abilities[].label` | `entry/.../string.json` → `EntryAbility_label` | **桌面图标名**（入口 Ability 的 label 优先级高于 `app.label`） |
+
+> DevEco 新建工程的默认值是 `app_name = "mtbrowser"`、`EntryAbility_label = "label"`，
+> 不改就直接上真机，桌面和状态栏都会显示 `label`——本工程踩过这个坑。
+> 另外 `module_desc` / `EntryAbility_desc` 也是模板占位（`module description` / `description`）。
+
+**改完必须 `versionCode + 1` 再装**：应用名和图标都属于安装信息，被 launcher / bundle manager 缓存，
+覆盖安装同样的 versionCode 不会刷新（本项目换图标、改名各踩过一次）。稳妥做法是 `hdc uninstall` 后重装。
+本工程没有 `en_US` / `zh_CN` 资源目录，只有 `base`；将来要做多语言，这几个 string 要在每个限定目录里各写一份。
+
 ## 移植缺口清单（对照 Android，按里程碑）
 
 **M2 输入输出**
