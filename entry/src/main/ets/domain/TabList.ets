@@ -197,16 +197,6 @@ export class TabList {
     }
   }
 
-  /** 清空 URL（页面被白名单卸载成空白页时用）：概览层回落到「空白页」，不是上一个正常页。 */
-  clearUrl(id: number): void {
-    const tab = this.find(id);
-    if (tab !== null) {
-      tab.url = '';
-      tab.title = '';
-      tab.progress = 0;
-    }
-  }
-
   /** 记录某标签自己的加载进度，供切换标签时恢复进度条。 */
   setProgress(id: number, progress: number): void {
     const tab = this.find(id);

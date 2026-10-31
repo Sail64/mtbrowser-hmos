@@ -48,7 +48,6 @@ struct Index {
   @State webH: number = 0;
   /** 被白名单拦下的地址（空 = 没有拦截提示）。URL 必须留在界面上让用户能复制走。 */
   @State blockedUrl: string = '';
-  @State blockedHost: string = '';
   /** 本轮是否已经"退回主页覆盖层"过一次（用于让返回键有终点，不再死循环） */
   private backHomeOnce: boolean = false;
   /** persistTabs 节流时间戳（pageEnd 可能很密集，不必每次都写 preferences） */
@@ -416,6 +415,8 @@ struct Index {
     if (url === '' || url === 'about:blank') {
       return; // 空标签页不写入 tab.url：概览层与地址栏保持占位文案
     }
+    // 真的有一页加载成功 → 之前那张拦截卡片就该消失，不能挂在新页面上
+    this.blockedUrl = '';
     this.tabList.update(id, url);
     // 导航完成才是"这个标签现在是什么地址"的真相：不在这里写盘，
     // 恢复时会拿到创建时的旧 URL（新标签甚至是空串）。
@@ -434,13 +435,17 @@ struct Index {
    * 都拿不到，更别说复制。现在把 URL 留在标签上（地址栏可见、可选中复制），
    * 同时弹一张拦截卡片，提供「复制链接」。
    */
-  private onTabBlocked(id: number, blockedUrl: string): void {
-    this.tabList.update(id, blockedUrl);
-    this.persistTabsThrottled();
+  private onTabBlocked(id: number, blockedUrl: string, unloaded: boolean): void {
+    if (unloaded) {
+      // 文档已被卸成 about:blank：地址栏显示这条失败地址（等同浏览器的错误页），
+      // 既不会和页面内容打架，也顺手成了第二个可复制的入口。
+      this.tabList.update(id, blockedUrl);
+      this.persistTabsThrottled();
+    }
+    // unloaded=false：页面还停在原处，地址栏必须保持原样，只在卡片里给出被拦地址。
     if (id === this.tabList.currentId()) {
       this.progress = 0;
       this.blockedUrl = blockedUrl;
-      this.blockedHost = UrlLite.hostOf(blockedUrl) ?? blockedUrl;
       this.syncAddress();
     }
     this.metaVersion = this.metaVersion + 1;
@@ -680,7 +685,8 @@ struct Index {
               onProgress: (tabId: number, p: number): void => this.onTabProgress(tabId, p),
               onTitle: (tabId: number, t: string): void => this.onTabTitle(tabId, t),
               onPageEnd: (tabId: number, u: string): void => this.onTabPageEnd(tabId, u),
-              onBlocked: (tabId: number, blockedUrl: string): void => this.onTabBlocked(tabId, blockedUrl)
+              onBlocked: (tabId: number, blockedUrl: string, unloaded: boolean): void =>
+                this.onTabBlocked(tabId, blockedUrl, unloaded)
             })
               .visibility(id === this.currentId ? Visibility.Visible : Visibility.None)
           }, (id: number): string => id.toString())

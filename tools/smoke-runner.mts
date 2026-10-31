@@ -108,6 +108,22 @@ ok(LocalNetwork.isLocalHost('169.254.10.1'), 'ln link-local');
 ok(!LocalNetwork.isLocalHost('example.com'), 'ln public domain');
 ok(!LocalNetwork.isLocalHost(null), 'ln null');
 ok(!LocalNetwork.isLocalHost(''), 'ln empty');
+
+// —— 绕过面：任何"换种写法就变成公网"的输入都必须 fail-closed ——
+ok(!LocalNetwork.isLocalHost('010.0.0.5'), 'ln leading-zero octet rejected (WHATWG reads as 8.0.0.5)');
+ok(!wlLocal.allows('http://010.0.0.5/'), 'wl blocks octal-ambiguity ip');
+ok(!LocalNetwork.isLocalHost('134744072'), 'ln decimal ip literal 8.8.8.8 rejected');
+ok(!wlLocal.allows('http://134744072/'), 'wl blocks decimal ip literal that decodes to 8.8.8.8');
+ok(!LocalNetwork.isLocalHost('0x08080808'), 'ln hex ip literal rejected');
+ok(!wlLocal.allows('http://0x08080808/'), 'wl blocks hex ip literal');
+ok(!LocalNetwork.isLocalHost('10.0.0.1.evil.com'), 'ln ip-prefixed public domain not local');
+ok(!wlLocal.allows('http://10.0.0.1.evil.com/'), 'wl blocks ip-prefixed public domain');
+ok(LocalNetwork.isLocalHost('[::ffff:10.0.0.1]'), 'ln ipv4-mapped private is local');
+ok(!LocalNetwork.isLocalHost('[::ffff:8.8.8.8]'), 'ln ipv4-mapped public is not local');
+ok(!wlLocal.allows('http://[::ffff:8.8.8.8]/'), 'wl blocks ipv4-mapped public');
+ok(wlLocal.allows('http://10.0.0.1./'), 'wl allows private ip with trailing dot');
+ok(!LocalNetwork.isLocalHost('127.1'), 'ln short-form loopback not guessed (fail-closed)');
+ok(LocalNetwork.isLocalHost('nas'), 'ln single-label intranet name still allowed');
 const wl2 = new DomainWhitelist();
 wl2.loadFrom(null);
 ok(!wl2.allows('https://anything.example.org'), 'wl missing file = deny all public hosts');

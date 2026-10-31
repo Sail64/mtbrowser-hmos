@@ -39,14 +39,15 @@ export class LocalNetwork {
     if (LocalNetwork.isIpv4(h)) {
       return LocalNetwork.isLocalV4(h);
     }
+    // 纯数字 / 0x 开头的主机名是 IPv4 的整型写法（十进制或十六进制）：
+    // `134744072` == 8.8.8.8，`0x08080808` 同样。这些绝不能按"内网短名"放行，
+    // 否则任意公网地址换一种写法就能绕过白名单。判不准 → false → 回落白名单。
+    if (/^\d+$/.test(h) || /^0x[0-9a-f]+$/.test(h)) {
+      return false;
+    }
     // 单标签主机名（没有点的短名）：内网里靠 hosts / 内网 DNS 解析
     if (!h.includes('.')) {
       return true;
-    }
-    // host:port 形式残留（正常不会走到这里，防御性处理）
-    const colon = h.indexOf(':');
-    if (colon > 0) {
-      return LocalNetwork.isLocalHost(h.substring(0, colon));
     }
     return false;
   }
@@ -58,6 +59,12 @@ export class LocalNetwork {
     }
     for (const s of seg) {
       if (s === '' || !/^\d{1,3}$/.test(s)) {
+        return false;
+      }
+      // 前导零必须拒绝：WHATWG URL 解析把 `010` 当八进制（=8），`010.0.0.5` 在浏览器里
+      // 是公网地址 8.0.0.5，而按十进制解析会得到 10.0.0.5 → 把公网地址误判成内网并放行。
+      // 判不准就不要判：返回 false，让它回落到白名单（fail-closed）。
+      if (s.length > 1 && s.startsWith('0')) {
         return false;
       }
       const n = parseInt(s, 10);
@@ -88,11 +95,17 @@ export class LocalNetwork {
   }
 
   private static isLocalV6(h: string): boolean {
-    if (h === '' ) {
+    if (h === '') {
       return false;
     }
     if (h === '::1' || h === '0:0:0:0:0:0:0:1') {
       return true;
+    }
+    // IPv4-mapped：::ffff:10.0.0.1 与 10.0.0.1 是同一个对端，必须同一套判定，
+    // 否则同一个内网服务换个写法就被拦（或反过来被放行）。
+    if (h.startsWith('::ffff:') || h.startsWith('0:0:0:0:0:ffff:')) {
+      const v4 = h.substring(h.lastIndexOf(':') + 1);
+      return LocalNetwork.isIpv4(v4) && LocalNetwork.isLocalV4(v4);
     }
     // ULA fc00::/7 → 首字节 fc / fd；链路本地 fe80::/10 → fe8x / fe9x / fea / feb
     const first = h.split(':')[0];
