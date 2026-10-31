@@ -48,7 +48,7 @@ export struct BrowserWeb {
   onTitle: (tabId: number, title: string) => void = (): void => {};
   onPageEnd: (tabId: number, url: string) => void = (): void => {};
   /** 主框架被白名单拦下且文档已被卸载：上层需要清掉该标签记录里的旧 URL */
-  onBlocked: (tabId: number) => void = (): void => {};
+  onBlocked: (tabId: number, blockedUrl: string) => void = (): void => {};
 
   private reminderService: ServerCertReminderService | null = null;
   private notifier: CertReminderNotifier | null = null;
@@ -412,6 +412,8 @@ export struct BrowserWeb {
           return true;
         }
         if (data.isMainFrame() && !AppGraph.domainWhitelist().allows(url)) {
+          // 同一个拦截归宿：URL 要留在界面里（卡片 + 地址栏），不能只 toast 一句
+          this.onBlocked(this.tabId, url);
           this.toast('域名不在白名单，已拦截');
           return true;
         }
@@ -445,8 +447,10 @@ export struct BrowserWeb {
           hilog.error(DOMAIN, TAG, 'failed to unload blocked page: %{public}s', JSON.stringify(e));
         }
         const blockedHost: string = UrlLite.hostOf(details.url) ?? details.url;
-        // 页面已被卸载成空白页，标签记录里的旧 URL 必须同步清掉，否则地址栏还在展示上一个正常页面
-        this.onBlocked(this.tabId);
+        // 把被拦的完整 URL 交回上层：页面已卸成空白页，用户唯一还能拿到这条地址的地方
+        // 就是应用自己（地址栏 + 拦截提示卡）。只 toast 一句「已拦截」等于把 URL 吞了，
+        // 用户既看不到也复制不出来——那才是死局。
+        this.onBlocked(this.tabId, details.url);
         this.toast(`已阻止加载：${blockedHost}（不在白名单）`);
       })
       .onShowFileSelector((event: OnShowFileSelectorEvent): boolean => {

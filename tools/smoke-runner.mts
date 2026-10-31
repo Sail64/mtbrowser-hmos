@@ -9,6 +9,7 @@ import { CertInfo, CertKind, CertVerdict, NavigationDecision, kindLabel } from '
 import { DefaultSslTrustPolicy, SslDecisionKind } from './domain/SslTrustPolicy.ts';
 import { DefaultNavigationPolicy } from './domain/NavigationPolicy.ts';
 import { DomainWhitelist } from './domain/DomainWhitelist.ts';
+import { LocalNetwork } from './domain/LocalNetwork.ts';
 import { fileNameFrom, sanitizeFileName, extensionForMime } from './domain/FileName.ts';
 import { suffixFilters } from './domain/AcceptTypes.ts';
 import { parseAsn1Time } from './domain/Asn1Time.ts';
@@ -84,9 +85,32 @@ ok(wl.allows('https://exact.b.com'), 'wl exact');
 ok(!wl.allows('https://c.com'), 'wl deny others');
 ok(wl.allows('about:blank'), 'wl non-http pass');
 ok(wl.allows('HTTPS://X.A.COM/y'), 'wl uppercase scheme + host still matches');
+
+// ---- 内网地址永远放行（白名单只挡公网误入） ----
+const wlLocal = new DomainWhitelist();
+wlLocal.loadFrom('*.a.com\n');
+ok(wlLocal.allows('http://10.0.0.5:5000/'), 'local: 10/8 allowed without entry');
+ok(wlLocal.allows('https://192.168.0.1/'), 'local: 192.168/16 allowed');
+ok(wlLocal.allows('https://172.20.1.1:8443/x'), 'local: 172.16/12 allowed');
+ok(wlLocal.allows('http://127.0.0.1:8080/'), 'local: loopback allowed');
+ok(wlLocal.allows('http://nas:5000/'), 'local: single-label host allowed');
+ok(wlLocal.allows('http://printer.local/'), 'local: mdns .local allowed');
+ok(wlLocal.allows('http://[::1]:8080/'), 'local: ipv6 loopback allowed');
+ok(!wlLocal.allows('https://172.32.0.1/'), 'public 172.32 still blocked');
+ok(!wlLocal.allows('https://8.8.8.8/'), 'public ip still blocked');
+ok(!wlLocal.allows('https://evil.example.org/'), 'public unknown host still blocked');
+
+ok(LocalNetwork.isLocalHost('10.0.0.5'), 'ln 10/8');
+ok(!LocalNetwork.isLocalHost('11.0.0.1'), 'ln 11.x is public');
+ok(LocalNetwork.isLocalHost('172.31.255.255'), 'ln 172.31 upper bound');
+ok(!LocalNetwork.isLocalHost('172.32.0.1'), 'ln 172.32 outside');
+ok(LocalNetwork.isLocalHost('169.254.10.1'), 'ln link-local');
+ok(!LocalNetwork.isLocalHost('example.com'), 'ln public domain');
+ok(!LocalNetwork.isLocalHost(null), 'ln null');
+ok(!LocalNetwork.isLocalHost(''), 'ln empty');
 const wl2 = new DomainWhitelist();
 wl2.loadFrom(null);
-ok(!wl2.allows('https://anything'), 'wl missing file = deny all');
+ok(!wl2.allows('https://anything.example.org'), 'wl missing file = deny all public hosts');
 
 // —— Asn1Time ——
 ok(parseAsn1Time('261231235959Z') === Date.UTC(2026, 11, 31, 23, 59, 59), 'asn1 utc');
@@ -277,6 +301,11 @@ ok(r3.outcome === SaveOutcome.SAVED && r3.outsideWhitelist === true, 'bookmark o
 
 const r4 = bm.save(null, 'x', '   ');
 ok(r4.outcome === SaveOutcome.EMPTY_URL && r4.site === null, 'bookmark empty url rejected');
+
+// 内网地址不该被白名单判定为"外面"：书签不应提示"访问会被拦截"
+const rIntra = bm.save(null, 'nas', 'http://10.0.0.5:5000');
+ok(rIntra.outcome === SaveOutcome.SAVED && rIntra.outsideWhitelist === false,
+  'bookmark on private ip is not flagged outside whitelist');
 
 const existing = r1.site!;
 const r5 = bm.save(existing, '改名', 'https://ok.com/path');

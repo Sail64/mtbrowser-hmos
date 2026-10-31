@@ -46,6 +46,9 @@ struct Index {
   /** Web 区域尺寸：给悬浮按钮做边界钳制 */
   @State webW: number = 0;
   @State webH: number = 0;
+  /** 被白名单拦下的地址（空 = 没有拦截提示）。URL 必须留在界面上让用户能复制走。 */
+  @State blockedUrl: string = '';
+  @State blockedHost: string = '';
   /** 本轮是否已经"退回主页覆盖层"过一次（用于让返回键有终点，不再死循环） */
   private backHomeOnce: boolean = false;
   /** persistTabs 节流时间戳（pageEnd 可能很密集，不必每次都写 preferences） */
@@ -217,6 +220,7 @@ struct Index {
    * @param reuseCurrent true = 在当前标签加载（书签点击/地址栏提交）；false = 新开标签
    */
   private openUrl(raw: string, reuseCurrent: boolean): void {
+    this.blockedUrl = '';
     const url = UrlLite.withHttpsPrefix(raw);
     if (url === '') {
       return;
@@ -279,6 +283,7 @@ struct Index {
   }
 
   private newTab(): void {
+    this.blockedUrl = '';
     const created: NewTabResult = this.tabList.newTab('');
     this.dropEvicted(created.evicted);
     this.switcherVisible = false;
@@ -290,6 +295,7 @@ struct Index {
   }
 
   private selectTab(id: number): void {
+    this.blockedUrl = '';
     if (this.tabList.select(id)) {
       this.switcherVisible = false;
       this.backHomeOnce = false;
@@ -333,6 +339,7 @@ struct Index {
   // ---------- 主页/浏览切换 ----------
 
   private showHomeLayer(): void {
+    this.blockedUrl = '';
     this.fullscreen = false;
     this.showHome = true;
     // 有会话 → 覆盖层（✕/返回回原页面）；无会话 → 独立主页（返回退出应用）
@@ -421,12 +428,19 @@ struct Index {
     this.metaVersion = this.metaVersion + 1;
   }
 
-  /** 主框架被白名单拦下、文档已卸载成空白页：清掉旧 URL，地址栏不许继续展示上一个正常页。 */
-  private onTabBlocked(id: number): void {
-    this.tabList.clearUrl(id);
+  /**
+   * 主框架被白名单拦下、文档已卸载成空白页。
+   * 不能像以前那样把 URL 清掉：页面已经没了，地址栏也没了，用户连「被拦的是什么地址」
+   * 都拿不到，更别说复制。现在把 URL 留在标签上（地址栏可见、可选中复制），
+   * 同时弹一张拦截卡片，提供「复制链接」。
+   */
+  private onTabBlocked(id: number, blockedUrl: string): void {
+    this.tabList.update(id, blockedUrl);
     this.persistTabsThrottled();
     if (id === this.tabList.currentId()) {
       this.progress = 0;
+      this.blockedUrl = blockedUrl;
+      this.blockedHost = UrlLite.hostOf(blockedUrl) ?? blockedUrl;
       this.syncAddress();
     }
     this.metaVersion = this.metaVersion + 1;
@@ -445,6 +459,67 @@ struct Index {
   }
 
   // ---------- 渲染辅助 ----------
+
+  /** 白名单拦截提示卡：URL 可选中复制 + 一键复制，避免「拦了又抄不出来」的死局。 */
+  @Builder
+  private blockedLayer() {
+    Column() {
+      Column() {
+        Text('访问被拦截')
+          .fontSize(17)
+          .fontWeight(FontWeight.Medium)
+          .fontColor('#1F1F1F')
+        Text('该域名不在白名单，页面没有加载。地址如下，可复制后到别处使用：')
+          .fontSize(13)
+          .fontColor('#6B7280')
+          .lineHeight(19)
+          .margin({ top: 6 })
+        Text(this.blockedUrl)
+          .fontSize(13)
+          .fontColor('#1F1F1F')
+          .copyOption(CopyOptions.LocalDevice)
+          .maxLines(5)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+          .width('100%')
+          .padding(10)
+          .backgroundColor('#F2F3F5')
+          .borderRadius(9)
+          .margin({ top: 10 })
+        Row({ space: 10 }) {
+          Button('复制链接')
+            .layoutWeight(1)
+            .height(38)
+            .fontSize(14)
+            .fontColor(Color.White)
+            .backgroundColor('#1F1F1F')
+            .onClick(() => {
+              const ok = AppGraph.copyText(this.blockedUrl);
+              this.toast(ok ? '已复制链接' : '复制失败');
+            })
+          Button('知道了')
+            .layoutWeight(1)
+            .height(38)
+            .fontSize(14)
+            .fontColor('#1F1F1F')
+            .backgroundColor('#F2F3F5')
+            .onClick(() => {
+              this.blockedUrl = '';
+            })
+        }
+        .width('100%')
+        .margin({ top: 14 })
+      }
+      .width('88%')
+      .padding(18)
+      .backgroundColor(Color.White)
+      .borderRadius(14)
+      .shadow({ radius: 20, color: '#24000000', offsetY: 6 })
+    }
+    .width('100%')
+    .height('100%')
+    .justifyContent(FlexAlign.Center)
+    .backgroundColor('#33000000')
+  }
 
   /** 标签创建时的初始地址：空标签用 about:blank。后台标签也带着真实 URL，
    *  但由 BrowserWeb 在"变成可见"时自己加载（见 active 属性），父层不隔空点隐藏控制器。 */
@@ -469,6 +544,10 @@ struct Index {
     // 返回次序与 Android 一致：退出全屏 → 关标签概览 → 关主页覆盖层 → 网页后退 → 回主页
     if (this.fullscreen) {
       this.fullscreen = false;
+      return true;
+    }
+    if (this.blockedUrl !== '') {
+      this.blockedUrl = '';
       return true;
     }
     if (this.switcherVisible) {
@@ -601,7 +680,7 @@ struct Index {
               onProgress: (tabId: number, p: number): void => this.onTabProgress(tabId, p),
               onTitle: (tabId: number, t: string): void => this.onTabTitle(tabId, t),
               onPageEnd: (tabId: number, u: string): void => this.onTabPageEnd(tabId, u),
-              onBlocked: (tabId: number): void => this.onTabBlocked(tabId)
+              onBlocked: (tabId: number, blockedUrl: string): void => this.onTabBlocked(tabId, blockedUrl)
             })
               .visibility(id === this.currentId ? Visibility.Visible : Visibility.None)
           }, (id: number): string => id.toString())
@@ -651,6 +730,11 @@ struct Index {
             this.switcherVisible = false;
           }
         })
+      }
+
+      // ---------- 白名单拦截提示（URL 可复制，避免「拦了又抄不出来」） ----------
+      if (this.blockedUrl !== '') {
+        this.blockedLayer()
       }
     }
     .width('100%')

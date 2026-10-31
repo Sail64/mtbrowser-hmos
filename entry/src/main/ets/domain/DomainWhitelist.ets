@@ -1,4 +1,5 @@
 import { UrlLite } from './UrlLite';
+import { LocalNetwork } from './LocalNetwork';
 
 /**
  * 主框架域名白名单：名单数据只存在于本地资源文件
@@ -58,6 +59,11 @@ export class DomainWhitelist {
     const host = parts.host;
     if (host === null) {
       return false;
+    }
+    // 内网/本机地址直接放行：白名单是用来挡公网误入的，不该要求把 NAS、路由器、
+    // 开发机的 10.x/192.168.x 抄进名单（见 domain/LocalNetwork 的说明）。
+    if (LocalNetwork.isLocalHost(host)) {
+      return true;
     }
     return this.getEntries().some((entry: string): boolean => DomainWhitelist.matches(host, entry));
   }

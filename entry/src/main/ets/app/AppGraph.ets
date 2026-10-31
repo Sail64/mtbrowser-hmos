@@ -20,6 +20,7 @@ import { SettingsStore } from '../data/SettingsStore';
 import { CertManagerClientCertSelector } from '../platform/CertManagerClientCertSelector';
 import { BookmarkService } from '../domain/BookmarkService';
 import { CookiePersistence } from '../platform/CookiePersistence';
+import { Clipboard } from '../platform/Clipboard';
 import { WebFilePicker } from '../platform/WebFilePicker';
 import { KernelDownloader } from '../platform/KernelDownloader';
 
@@ -156,6 +157,16 @@ export class AppGraph {
   /** 诊断：打印 cookie 数量（不含内容），用于判断登录态是否真的落盘/读回。 */
   static reportCookies(url: string, when: string): void {
     CookiePersistence.report(url, when);
+  }
+
+  /**
+   * 复制文本到系统剪贴板。
+   * 拦截页要把被拦下的 URL 交还给用户（否则「拦了又抄不出来」就是死局），
+   * 但 ui 不得直接 import @kit.*，所以经组合根转发。
+   * @return 是否成功
+   */
+  static copyText(text: string): boolean {
+    return Clipboard.copy(text);
   }
 
   /**
