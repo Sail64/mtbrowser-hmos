@@ -1,5 +1,6 @@
 import { pasteboard } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { BusinessError } from '@kit.BasicServicesKit';
 
 const DOMAIN = 0x0001;
 const TAG = 'Clipboard';
@@ -16,7 +17,10 @@ export class Clipboard {
       pasteboard.getSystemPasteboard().setDataSync(data);
       return true;
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'copy failed: %{public}s', JSON.stringify(e));
+      // BusinessError 的 code 才是排查依据；JSON.stringify 会把它压成 "{}"
+      const err = e as BusinessError;
+      hilog.error(DOMAIN, TAG, 'copy failed: code=%{public}d message=%{public}s',
+        err.code, err.message);
       return false;
     }
   }

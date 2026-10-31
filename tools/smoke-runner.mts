@@ -127,6 +127,8 @@ ok(LocalNetwork.isLocalHost('nas'), 'ln single-label intranet name still allowed
 const wl2 = new DomainWhitelist();
 wl2.loadFrom(null);
 ok(!wl2.allows('https://anything.example.org'), 'wl missing file = deny all public hosts');
+// 语义变更显式化：空名单也放行单标签内网短名（改测试不是为了让旧断言通过，而是把新语义写死）
+ok(wl2.allows('http://nas'), 'wl missing file still allows single-label intranet host');
 
 // —— Asn1Time ——
 ok(parseAsn1Time('261231235959Z') === Date.UTC(2026, 11, 31, 23, 59, 59), 'asn1 utc');

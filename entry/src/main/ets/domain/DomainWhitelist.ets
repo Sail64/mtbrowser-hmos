@@ -4,8 +4,8 @@ import { LocalNetwork } from './LocalNetwork';
 /**
  * 主框架域名白名单：名单数据只存在于本地资源文件
  * `entry/src/main/resources/rawfile/domain_whitelist.txt`（已被 .gitignore 排除，
- * 不入库、不随源码分发，但会打进本机构建的 HAP）。文件缺失时白名单为空，
- * 所有 http/https 主框架导航均被拦截。
+ * 不入库、不随源码分发，但会打进本机构建的 HAP）。文件缺失时名单为空：
+ * 此时**只有公网域名/公网 IP**被拦截，内网地址与单标签主机名仍然放行（见 LocalNetwork）。
  *
  * 文件规则（与 Android 版一致）：
  * - 每行一条域名，`#` 开头为注释，空行忽略

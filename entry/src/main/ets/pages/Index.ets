@@ -46,8 +46,14 @@ struct Index {
   /** Web 区域尺寸：给悬浮按钮做边界钳制 */
   @State webW: number = 0;
   @State webH: number = 0;
-  /** 被白名单拦下的地址（空 = 没有拦截提示）。URL 必须留在界面上让用户能复制走。 */
+  /** 当前标签要展示的拦截地址（空 = 不展示卡片）。URL 必须留在界面上让用户能复制走。 */
   @State blockedUrl: string = '';
+  /**
+   * 按标签记住被拦地址（tabId → url），**只在内存里**，绝不落盘：
+   * 落盘的话冷启动恢复会拿一个必然再被拦的地址去导航，还会把用户上次真正在看的页面顶掉。
+   * 切回该标签时靠它把卡片重新挂上，避免「地址栏有 URL、页面空白、卡片却没了」。
+   */
+  private blockedByTab: Map<number, string> = new Map<number, string>();
   /** 本轮是否已经"退回主页覆盖层"过一次（用于让返回键有终点，不再死循环） */
   private backHomeOnce: boolean = false;
   /** persistTabs 节流时间戳（pageEnd 可能很密集，不必每次都写 preferences） */
@@ -181,7 +187,9 @@ struct Index {
       AppGraph.settings().setOpenTabs([], 0);
       return;
     }
-    const urls: string[] = all.map((t: TabMeta): string => t.url);
+    // 被拦标签存空串：它当下没有有效文档，存被拦 URL 只会让下次恢复把一个必然被拒的地址
+    // 再导航一遍（或整标签被白名单过滤掉，把用户真正在看的页面顶掉）。
+    const urls: string[] = all.map((t: TabMeta): string => this.blockedByTab.has(t.id) ? '' : t.url);
     let idx = 0;
     for (let i = 0; i < all.length; i++) {
       if (all[i].id === this.tabList.currentId()) {
@@ -220,6 +228,9 @@ struct Index {
    */
   private openUrl(raw: string, reuseCurrent: boolean): void {
     this.blockedUrl = '';
+    if (this.currentId >= 0) {
+      this.blockedByTab.delete(this.currentId);
+    }
     const url = UrlLite.withHttpsPrefix(raw);
     if (url === '') {
       return;
@@ -294,7 +305,6 @@ struct Index {
   }
 
   private selectTab(id: number): void {
-    this.blockedUrl = '';
     if (this.tabList.select(id)) {
       this.switcherVisible = false;
       this.backHomeOnce = false;
@@ -302,6 +312,8 @@ struct Index {
       this.homeOverlay = false;
       // 首次导航由 BrowserWeb 自己在 active 变 true 时补上（隐藏状态下控制器没就绪，
       // 父层隔空 loadUrl 会静默失败 → 切过去永远白屏）。
+      // 被拦过又没重新加载的标签：卡片要跟着回来，否则地址栏有 URL、页面空白、卡片没了
+      this.blockedUrl = this.blockedByTab.get(id) ?? '';
       // 恢复该标签自己的进度（它可能仍在加载）
       this.progress = this.tabList.progressOf(id);
       this.syncTabs();
@@ -313,8 +325,11 @@ struct Index {
     const wasCurrent = id === this.tabList.currentId();
     const remaining = this.tabList.close(id);
     this.controllers.delete(id);
+    this.blockedByTab.delete(id);
     if (wasCurrent) {
       this.progress = remaining < 0 ? 0 : this.tabList.progressOf(remaining);
+      // 当前标签被关掉后，卡片要跟着新的当前标签走（关掉的正好是被拦标签时卡片必须消失）
+      this.blockedUrl = remaining < 0 ? '' : (this.blockedByTab.get(remaining) ?? '');
     }
     if (remaining < 0) {
       this.showHome = true;
@@ -328,7 +343,9 @@ struct Index {
     const closed = this.tabList.closeOthers(id);
     for (const cid of closed) {
       this.controllers.delete(cid);
+      this.blockedByTab.delete(cid);
     }
+    this.blockedUrl = this.blockedByTab.get(id) ?? '';
     this.showHome = false;
     this.switcherVisible = false;
     this.toast('已关闭其他标签');
@@ -415,8 +432,11 @@ struct Index {
     if (url === '' || url === 'about:blank') {
       return; // 空标签页不写入 tab.url：概览层与地址栏保持占位文案
     }
-    // 真的有一页加载成功 → 之前那张拦截卡片就该消失，不能挂在新页面上
-    this.blockedUrl = '';
+    // 真的有一页加载成功 → 之前那张拦截卡片与该标签的拦截记忆都该消失
+    this.blockedByTab.delete(id);
+    if (id === this.tabList.currentId()) {
+      this.blockedUrl = '';
+    }
     this.tabList.update(id, url);
     // 导航完成才是"这个标签现在是什么地址"的真相：不在这里写盘，
     // 恢复时会拿到创建时的旧 URL（新标签甚至是空串）。
@@ -436,13 +456,18 @@ struct Index {
    * 同时弹一张拦截卡片，提供「复制链接」。
    */
   private onTabBlocked(id: number, blockedUrl: string, unloaded: boolean): void {
+    this.blockedByTab.set(id, blockedUrl);
     if (unloaded) {
       // 文档已被卸成 about:blank：地址栏显示这条失败地址（等同浏览器的错误页），
       // 既不会和页面内容打架，也顺手成了第二个可复制的入口。
       this.tabList.update(id, blockedUrl);
-      this.persistTabsThrottled();
     }
     // unloaded=false：页面还停在原处，地址栏必须保持原样，只在卡片里给出被拦地址。
+    // 但无论哪条路径，这个标签的标题/进度都属于"上一页"，不清掉就会在标签概览里
+    // 出现「旧标题 + 被拦 URL」这种自相矛盾的条目。
+    this.tabList.rename(id, '');
+    this.tabList.setProgress(id, 0);
+    this.persistTabs(); // 立即落盘（被拦标签会被写成空串），别等节流窗口
     if (id === this.tabList.currentId()) {
       this.progress = 0;
       this.blockedUrl = blockedUrl;
@@ -479,17 +504,23 @@ struct Index {
           .fontColor('#6B7280')
           .lineHeight(19)
           .margin({ top: 6 })
-        Text(this.blockedUrl)
-          .fontSize(13)
-          .fontColor('#1F1F1F')
-          .copyOption(CopyOptions.LocalDevice)
-          .maxLines(5)
-          .textOverflow({ overflow: TextOverflow.Ellipsis })
-          .width('100%')
-          .padding(10)
-          .backgroundColor('#F2F3F5')
-          .borderRadius(9)
-          .margin({ top: 10 })
+        // 用可滚动容器装完整 URL：maxLines + Ellipsis 会把长地址截断，
+        // 用户手选复制时看到的和实际复制的不是一回事。
+        Scroll() {
+          Text(this.blockedUrl)
+            .fontSize(13)
+            .fontColor('#1F1F1F')
+            .copyOption(CopyOptions.LocalDevice)
+            .width('100%')
+            .padding(10)
+        }
+        .constraintSize({ maxHeight: 132 })
+        .width('100%')
+        .scrollBar(BarState.Auto)
+        .align(Alignment.TopStart)
+        .backgroundColor('#F2F3F5')
+        .borderRadius(9)
+        .margin({ top: 10 })
         Row({ space: 10 }) {
           Button('复制链接')
             .layoutWeight(1)

@@ -88,6 +88,8 @@ entry/src/main/ets/
 1. **白名单是主边界，但只覆盖主框架，且不拦内网地址**：`onLoadIntercept`（发起时）+ `onNavigationEntryCommitted`（提交后）两道闸；后者在非白名单提交时会 `stop()` 并**把文档卸载回 about:blank**（只 stop 是假拦截——脚本早就跑了）。被拦 URL 会写回 `tab.url` 并弹拦截卡片，**URL 可选中复制、也有「复制链接」按钮**——拦了又抄不走是死局，用户连「自己被拦的是什么地址」都拿不到。
    **内网/本机地址一律放行**（`domain/LocalNetwork`）：IPv4 私有段 10/8、172.16/12、192.168/16、回环 127/8、链路本地 169.254/16，IPv6 回环与 ULA/链路本地，`localhost`、`*.local`、以及不含点的单标签主机名（`nas`、`router`）。理由：白名单用来挡公网误入，内网可达性由所在网络决定，浏览器白名单不是网络边界；要求把 NAS/路由器地址抄进名单只会制造"忘了加就整站不可用"的假故障。**公网域名与公网 IP 仍然必须命中名单。**
    子框架/子资源与 Android 一样不受白名单约束，这是明知的边界，别当成已覆盖。
+   **两条拦截路径对界面状态的影响不同，别当成一条**：`onNavigationEntryCommitted` 是「提交后拦截」，文档已被卸成 `about:blank`，地址栏显示这条失败地址（等同浏览器错误页）；`onLoadIntercept` 是「发起时拦截」，当前页面还停着，**地址栏绝不能改写**，被拦地址只在拦截卡片里给出。卡片状态按标签记在 `Index.blockedByTab`（内存，不落盘），切回标签会重新挂上，页面加载成功 / 关标签 / 主动输新地址时解除。
+   **已知副作用（有意接受）**：内网放行后，任何已放行的公网页面都能用顶层导航把浏览器带到内网设备（`location='http://192.168.0.1/…'`，CSRF 面变大）。以前这些地址被白名单挡住。要收紧就得给内网导航加「必须可归因为用户操作」的一次性令牌，目前没做。
 2. **危险 scheme 不外抛**：`file:` / `javascript:` / `data:` / `blob:` / `content:` / `about:` 一律 `BLOCK`；其余只放行 `mailto` / `tel` / `sms` / `geo`，未知深链 scheme 也 `BLOCK`（ArkWeb 的 `onLoadIntercept` 拿不到「是否用户手势」，页面一行 `location.href` 就能静默唤起任意能力）。**与 Android 的有意偏离**。
 3. **备份能力未接入（有意）**：module.json5 里没有 `type: "backup"` 的 `extensionAbilities`，`backup_config.json` 也没有——所以系统备份根本不会带上本应用数据（这是真正的保证，不是靠配置里的 `allowToBackupRestore`）。preferences 里有书签、按站点的证书 keyUri、lastUrl，不该随云备份外流；单用户自托管工具也没有跨端恢复需求。**若将来要接备份，必须保持 `allowToBackupRestore: false` 并把 preferences 排除在外。**
 4. **凭据只存引用**：客户端私钥/证书本身在系统凭据库，应用侧只存 `keyUri`，且不写 hilog（host 目前以 `%{public}s` 打印，仅本机日志，release 前应收紧）。
