@@ -202,6 +202,7 @@ struct Index {
   private dropEvicted(evicted: number[]): void {
     for (const id of evicted) {
       this.controllers.delete(id);
+      this.blockedByTab.delete(id);
     }
   }
 
@@ -369,6 +370,9 @@ struct Index {
     }
     this.showHome = false;
     this.homeOverlay = false;
+    // 回主页时卡片收起（showHomeLayer 清过），回到浏览态必须按当前标签重新挂上，
+    // 否则又是一屏「地址栏有被拦 URL、页面空白、卡片没有」。
+    this.blockedUrl = this.blockedByTab.get(this.tabList.currentId()) ?? '';
   }
 
   private removeSite(site: Site): void {
