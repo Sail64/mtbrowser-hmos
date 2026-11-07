@@ -70,7 +70,7 @@ struct Index {
     // 内核下载委托全局注册一次（下载走内核栈才继承 mTLS/证书豁免）
     AppGraph.installDownloader(this.notifier);
     // 恢复上次的会话：把所有还开着的标签一起恢复，而不是退回单一首页
-    // （用户抱怨过"每次被杀掉再启动都跑到 8443 那个"）。
+    // （用户抱怨过"冷启动总是跳回固定站点"）。
     const savedTabs = AppGraph.settings().getOpenTabs();
     // 全是空标签（用户把标签都清空了）时不该恢复成"4 个空白页且回不到主页"，
     // 直接走下面的旧逻辑（多半也没有 lastUrl，最终停在主页）。
