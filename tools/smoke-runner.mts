@@ -10,6 +10,7 @@ import { DefaultSslTrustPolicy, SslDecisionKind } from './domain/SslTrustPolicy.
 import { DefaultNavigationPolicy } from './domain/NavigationPolicy.ts';
 import { DomainWhitelist } from './domain/DomainWhitelist.ts';
 import { LocalNetwork } from './domain/LocalNetwork.ts';
+import { shouldOpenInNewTab } from './domain/LinkOpenPolicy.ts';
 import { fileNameFrom, sanitizeFileName, extensionForMime } from './domain/FileName.ts';
 import { suffixFilters } from './domain/AcceptTypes.ts';
 import { parseAsn1Time } from './domain/Asn1Time.ts';
@@ -364,6 +365,40 @@ ok(fd1.x === 314 && fd1.y === 10, 'fab default position top right');
 const fd2 = FabGeometry.defaultTopRight(0, 0, 36, 10);
 ok(fd2.x === FAB_UNSET && fd2.y === FAB_UNSET, 'fab default unset when container unknown');
 ok(!FabGeometry.isSet(FAB_UNSET, 10) && FabGeometry.isSet(0, 0), 'fab isSet semantics');
+
+
+// —— LinkOpenPolicy：链接点击是否另开标签 ——
+const baseLink = {
+  isMainFrame: true, isRequestGesture: true, isRedirect: false,
+  method: 'GET', url: 'https://b.example.org/x', currentUrl: 'https://a.example.org/'
+};
+ok(shouldOpenInNewTab(baseLink), 'link: user click on http(s) opens new tab');
+ok(!shouldOpenInNewTab({ ...baseLink, isRequestGesture: false }),
+  'link: script navigation (no gesture) stays in current tab');
+ok(!shouldOpenInNewTab({ ...baseLink, isRedirect: true }),
+  'link: redirect chain stays in same tab');
+ok(!shouldOpenInNewTab({ ...baseLink, method: 'POST' }),
+  'link: form POST stays in current tab');
+ok(!shouldOpenInNewTab({ ...baseLink, method: 'post' }),
+  'link: lowercase post also rejected');
+ok(!shouldOpenInNewTab({ ...baseLink, isMainFrame: false }),
+  'link: iframe/subresource does not split tabs');
+ok(!shouldOpenInNewTab({ ...baseLink, url: 'mailto:a@example.org' }),
+  'link: mailto does not open a tab');
+ok(!shouldOpenInNewTab({ ...baseLink, url: 'about:blank' }),
+  'link: about:blank does not open a tab');
+ok(!shouldOpenInNewTab({ ...baseLink, url: 'javascript:alert(1)' }),
+  'link: javascript: does not open a tab');
+ok(!shouldOpenInNewTab({ ...baseLink, url: 'https://a.example.org/#top' }),
+  'link: same-page anchor (hash only) stays');
+ok(!shouldOpenInNewTab({ ...baseLink, url: 'https://a.example.org/#other', currentUrl: 'https://a.example.org/#top' }),
+  'link: hash-only change between anchors stays');
+ok(shouldOpenInNewTab({ ...baseLink, url: 'https://a.example.org/page2' }),
+  'link: different path same origin opens new tab');
+ok(shouldOpenInNewTab({ ...baseLink, currentUrl: '' }),
+  'link: empty current url still opens new tab');
+ok(shouldOpenInNewTab({ ...baseLink, method: undefined as unknown as string }),
+  'link: undefined method treated as GET');
 
 console.log(`SMOKE RESULT: pass=${pass} fail=${fail}`);
 if (fail > 0) { process.exit(1); }

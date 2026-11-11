@@ -721,7 +721,10 @@ struct Index {
               onTitle: (tabId: number, t: string): void => this.onTabTitle(tabId, t),
               onPageEnd: (tabId: number, u: string): void => this.onTabPageEnd(tabId, u),
               onBlocked: (tabId: number, blockedUrl: string, unloaded: boolean): void =>
-                this.onTabBlocked(tabId, blockedUrl, unloaded)
+                this.onTabBlocked(tabId, blockedUrl, unloaded),
+              // 点链接另开标签：复用已有的 openUrl(reuseCurrent=false) —— 建标签、切过去、
+              // 由新 BrowserWeb 的 initialUrl 首次导航，走的是已经验证过的同一条路径。
+              onOpenInNewTab: (url: string): void => this.openUrl(url, false)
             })
               .visibility(id === this.currentId ? Visibility.Visible : Visibility.None)
           }, (id: number): string => id.toString())

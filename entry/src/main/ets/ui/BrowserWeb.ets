@@ -6,6 +6,7 @@ import { UrlLite } from '../domain/UrlLite';
 import { NavigationDecision } from '../domain/model/CertModels';
 import { SslDecisionKind } from '../domain/SslTrustPolicy';
 import { sslErrorLabel } from '../domain/SslErrorLabels';
+import { LinkNavFacts, shouldOpenInNewTab } from '../domain/LinkOpenPolicy';
 import { ServerCertReminderService, CertReminderNotifier } from '../domain/ServerCertReminderService';
 import { ToastNotifier } from './ToastNotifier';
 
@@ -56,6 +57,12 @@ export struct BrowserWeb {
    */
   onBlocked: (tabId: number, blockedUrl: string, unloaded: boolean) => void =
     (tabId: number, blockedUrl: string, unloaded: boolean): void => {};
+
+  /**
+   * 用户点了页面里的链接，且目标是可访问的 http(s)：交给上层另开一个标签承载。
+   * 本次原标签导航由 onLoadIntercept 返回 true 取消（页面留在原处，不闪白）。
+   */
+  onOpenInNewTab: (url: string) => void = (url: string): void => {};
 
   private reminderService: ServerCertReminderService | null = null;
   private notifier: CertReminderNotifier | null = null;
@@ -422,6 +429,21 @@ export struct BrowserWeb {
           // 发起时拦截：页面没动，交给上层只弹卡片（地址栏保持当前页，不改写）
           this.onBlocked(this.tabId, url, false);
           this.toast('域名不在白名单，已拦截');
+          return true;
+        }
+        // 链接点击另开标签：只有在「可访问」之后才判，被白名单拦住的链接不该再裂一个标签
+        // 出来（那会变成「新标签 + 拦截卡片」两个坑）。
+        // 判定依据全部来自 ArkWeb 自己：手势 / 主框架 / 非重定向 / GET / 非同页锚点。
+        const facts: LinkNavFacts = {
+          isMainFrame: data.isMainFrame(),
+          isRequestGesture: data.isRequestGesture(),
+          isRedirect: data.isRedirect(),
+          method: data.getRequestMethod(),
+          url: url,
+          currentUrl: current
+        };
+        if (shouldOpenInNewTab(facts)) {
+          this.onOpenInNewTab(url);
           return true;
         }
         return false;

@@ -90,13 +90,15 @@ entry/src/main/ets/
    子框架/子资源与 Android 一样不受白名单约束，这是明知的边界，别当成已覆盖。
    **两条拦截路径对界面状态的影响不同，别当成一条**：`onNavigationEntryCommitted` 是「提交后拦截」，文档已被卸成 `about:blank`，地址栏显示这条失败地址（等同浏览器错误页）；`onLoadIntercept` 是「发起时拦截」，当前页面还停着，**地址栏绝不能改写**，被拦地址只在拦截卡片里给出。卡片状态按标签记在 `Index.blockedByTab`（内存，不落盘），切回标签会重新挂上，页面加载成功 / 关标签 / 主动输新地址时解除。
    **已知副作用（有意接受）**：内网放行后，任何已放行的公网页面都能用顶层导航把浏览器带到内网设备（`location='http://192.168.0.1/…'`，CSRF 面变大）。以前这些地址被白名单挡住。要收紧就得给内网导航加「必须可归因为用户操作」的一次性令牌，目前没做。
-2. **危险 scheme 不外抛**：`file:` / `javascript:` / `data:` / `blob:` / `content:` / `about:` 一律 `BLOCK`；其余只放行 `mailto` / `tel` / `sms` / `geo`，未知深链 scheme 也 `BLOCK`（ArkWeb 的 `onLoadIntercept` 拿不到「是否用户手势」，页面一行 `location.href` 就能静默唤起任意能力）。**与 Android 的有意偏离**。
+2. **危险 scheme 不外抛**：`file:` / `javascript:` / `data:` / `blob:` / `content:` / `about:` 一律 `BLOCK`；其余只放行 `mailto` / `tel` / `sms` / `geo`，未知深链 scheme 也 `BLOCK`。**与 Android 的有意偏离**。补充事实：`onLoadIntercept` 的 `WebResourceRequest` **确实**带 `isRequestGesture()`（见第 9 条），但外部 scheme 这条策略刻意不对它做区分——放行与否是「这个 scheme 会不会造成副作用外溢」的问题，不是「谁触发的」的问题。
 3. **备份能力未接入（有意）**：module.json5 里没有 `type: "backup"` 的 `extensionAbilities`，`backup_config.json` 也没有——所以系统备份根本不会带上本应用数据（这是真正的保证，不是靠配置里的 `allowToBackupRestore`）。preferences 里有书签、按站点的证书 keyUri、lastUrl，不该随云备份外流；单用户自托管工具也没有跨端恢复需求。**若将来要接备份，必须保持 `allowToBackupRestore: false` 并把 preferences 排除在外。**
 4. **凭据只存引用**：客户端私钥/证书本身在系统凭据库，应用侧只存 `keyUri`，且不写 hilog（host 目前以 `%{public}s` 打印，仅本机日志，release 前应收紧）。
 5. **SSL 放行永不静默，且白名单外直接 DENY**：策略三分支（PROCEED/ASK_USER/DENY）。非白名单站点的证书错误连「仍要继续」的机会都没有（`DefaultSslTrustPolicy` 依赖 `DomainWhitelist`）。会话豁免仅内存、仅该 host、仅本次运行。
 6. **证书错误按帧归因，绝不静默放行**：用 `onSslErrorEvent`（自带 `url` + `isMainFrame`）。子框架/子资源 → 直接 `cancel`，不弹框、不授豁免（否则第三方端点的坏证书会给整站换来免检）；主框架 → 走 domain 三分支策略，host 取自本次出错请求的 `url`，取不到就拒绝。**不要退回 `controller.getUrl()` 或「主文档是否已提交」这套猜测**：前者在主框架 TLS 失败时返回的是上一个已提交文档，会「弹框写 A 站、实际放行 B 站」。
 7. **客户端证书只发给白名单站点**：`onClientAuthenticationRequest` 的来源 host 不在白名单时直接 `ignore()`，防止白名单页面里嵌的第三方 iframe 骗取私钥使用授权。
 8. **400 清理必须先有 mTLS 事实**：只有本标签确实在该 host 完成过客户端证书握手，才允许销毁用户的证书绑定；`clearClientAuthenticationCache` 不可用时提示词会如实降级。
+
+9. **链接点击另开标签，判定只用 ArkWeb 给的请求事实**：`onLoadIntercept` 在**白名单放行之后**才调 `domain/LinkOpenPolicy.shouldOpenInNewTab`，要求同时满足「主框架 + `isRequestGesture()` 为真 + 非 `isRedirect()` + GET + http(s) + 目标与当前页去掉 `#hash` 后不同」。少一条就留在原标签：否则 302/OAuth 回跳会裂出多个标签、POST 表单换标签会丢提交上下文、SPA 自动跳转会把标签刷满。**被白名单拦住的链接不裂标签**（先拦后判），避免「新标签 + 另一张拦截卡片」两个坑。`target=_blank` 的链接因 `multiWindowAccess` 保持关闭，走的是同一条主框架导航路径，不需要 `onWindowNew`/`setWebController` 那套多窗口机制。新标签复用 `openUrl(url, reuseCurrent=false)`（建标签 → 由新 `BrowserWeb` 的 `initialUrl` 首次导航），标签上限与 LRU 淘汰仍由 `TabList` 统一负责。
 
 ## ArkTS 编码红线
 
