@@ -3,10 +3,10 @@ import { common, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { AppGraph } from '../app/AppGraph';
 import { UrlLite } from '../domain/UrlLite';
-import { NavigationDecision } from '../domain/model/CertModels';
 import { SslDecisionKind } from '../domain/SslTrustPolicy';
 import { sslErrorLabel } from '../domain/SslErrorLabels';
-import { LinkNavFacts, shouldOpenInNewTab } from '../domain/LinkOpenPolicy';
+import type { LinkNavFacts } from '../domain/LinkOpenPolicy';
+import { InterceptAction, decideIntercept } from '../domain/InterceptDecision';
 import { ServerCertReminderService, CertReminderNotifier } from '../domain/ServerCertReminderService';
 import { ToastNotifier } from './ToastNotifier';
 
@@ -90,6 +90,8 @@ export struct BrowserWeb {
   private loadErrorNotified: boolean = false;
   /** 文件选择器是否已拉起（重入闸：picker 打开期间不允许再起一个） */
   private filePicking: boolean = false;
+  /** 组件已销毁：250ms 定时器 / 120ms 重试链可能还在跑，必须能自己停手 */
+  private gone: boolean = false;
 
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
@@ -98,6 +100,7 @@ export struct BrowserWeb {
   }
 
   aboutToDisappear(): void {
+    this.gone = true;
     // 标签关闭时若有未决的 SSL 弹框，promise 不会再回调：把本实例登记过的 host 清掉，
     // 否则该 host 在本进程内会被 showSslHosts 永久挡住，之后所有 SSL 错误都被静默取消。
     for (const h of this.sslHostsShown) {
@@ -112,7 +115,7 @@ export struct BrowserWeb {
    * 盲调 loadUrl 会静默失败（表现为地址栏有 URL、页面永远白）。
    */
   private tryLoadPending(attempt: number): void {
-    if (this.initialLoadStarted || !this.active) {
+    if (this.gone || this.initialLoadStarted || !this.active) {
       return;
     }
     if (this.pendingUrl === '' || this.pendingUrl === 'about:blank') {
@@ -125,6 +128,10 @@ export struct BrowserWeb {
       // 引擎还没 attach：短延迟再试，有界（6 次 × 120ms）
       if (attempt >= 6) {
         hilog.error(DOMAIN, TAG, 'initial loadUrl gave up: %{public}s', JSON.stringify(e));
+        // 放弃就要**消费掉**这个目标：留着它，下一次 about:blank 的 onPageEnd
+        // 会把用户从当前页悄悄拽回这个陈旧地址。
+        this.pendingUrl = '';
+        this.initialLoadStarted = true;
         this.toast('页面加载失败，可点 ↻ 重试');
         return;
       }
@@ -142,6 +149,9 @@ export struct BrowserWeb {
       return;
     }
     setTimeout(() => {
+      if (this.gone) {
+        return;
+      }
       this.tryLoadPending(0);
     }, 250);
   }
@@ -364,6 +374,10 @@ export struct BrowserWeb {
       // 安全基线：禁混合内容、禁本地文件访问
       .mixedMode(MixedMode.None)
       .fileAccess(false)
+      // 显式关闭多窗口：`target=_blank` / window.open 因此不新建原生窗口，
+      // 而是走同一条主框架导航，交给上面的 onLoadIntercept 决定是否裂标签。
+      // 不写这一行等于把行为交给默认值——默认值在两个方向上都不安全。
+      .multiWindowAccess(false)
       // ArkWeb 默认 false。SPA（Hermes WebUI）此时 localStorage === null，
       // 首屏后的 JS 直接抛 TypeError，页面渲染正常但全部交互失效。
       .domStorageAccess(true)
@@ -415,25 +429,8 @@ export struct BrowserWeb {
         } catch (e) {
           current = '';
         }
-        const decision = AppGraph.navigationPolicy().decide(url, current);
-        if (decision === NavigationDecision.OPEN_EXTERNAL) {
-          this.openExternal(url);
-          return true;
-        }
-        if (decision === NavigationDecision.BLOCK) {
-          // file:/javascript:/data:/blob: 等危险 scheme：不外抛也不加载
-          this.toast('已拦截不安全的跳转');
-          return true;
-        }
-        if (data.isMainFrame() && !AppGraph.domainWhitelist().allows(url)) {
-          // 发起时拦截：页面没动，交给上层只弹卡片（地址栏保持当前页，不改写）
-          this.onBlocked(this.tabId, url, false);
-          this.toast('域名不在白名单，已拦截');
-          return true;
-        }
-        // 链接点击另开标签：只有在「可访问」之后才判，被白名单拦住的链接不该再裂一个标签
-        // 出来（那会变成「新标签 + 拦截卡片」两个坑）。
-        // 判定依据全部来自 ArkWeb 自己：手势 / 主框架 / 非重定向 / GET / 非同页锚点。
+        // 判定顺序（scheme 闸门 → 白名单 → 裂标签）由 domain/InterceptDecision 统一决定，
+        // 这里只做「执行」，顺序本身在 tools/domain-smoke.sh 里有断言守着。
         const facts: LinkNavFacts = {
           isMainFrame: data.isMainFrame(),
           isRequestGesture: data.isRequestGesture(),
@@ -442,16 +439,36 @@ export struct BrowserWeb {
           url: url,
           currentUrl: current
         };
-        if (shouldOpenInNewTab(facts)) {
-          this.onOpenInNewTab(url);
-          return true;
+        const nav = AppGraph.navigationPolicy().decide(url, current);
+        const action = decideIntercept(nav, AppGraph.domainWhitelist().allows(url), facts);
+        switch (action) {
+          case InterceptAction.OPEN_EXTERNAL:
+            this.openExternal(url);
+            return true;
+          case InterceptAction.BLOCK_SCHEME:
+            // file:/javascript:/data:/blob: 等危险 scheme：不外抛也不加载
+            this.toast('已拦截不安全的跳转');
+            return true;
+          case InterceptAction.BLOCK_WHITELIST:
+            // 发起时拦截：页面没动，交给上层只弹卡片（地址栏保持当前页，不改写）
+            this.onBlocked(this.tabId, url, false);
+            this.toast('域名不在白名单，已拦截');
+            return true;
+          case InterceptAction.NEW_TAB:
+            this.onOpenInNewTab(url);
+            return true;
+          default:
+            return false;
         }
-        return false;
       })
       // 白名单兜底：302 重定向 / 脚本跳转不经过 onLoadIntercept
       // （Android 用 doUpdateVisitedHistory 在同一位置补位）
       .onNavigationEntryCommitted((details: LoadCommittedDetails): void => {
         if (!details.isMainFrame || details.isSameDocument) {
+          return;
+        }
+        // 已被拦过的同一个地址（用户点刷新）：再走一遍 stop+卸载+弹卡是纯噪音
+        if (details.url === this.blockedUrl) {
           return;
         }
         // 主文档已提交：此后到达的 SSL 错误必然是子资源的
@@ -555,6 +572,14 @@ export struct BrowserWeb {
         AppGraph.reportCookies(url, 'pageEnd');
       })
       .onPageBegin((event?: OnPageBeginEvent): void => {
+        // 真的开始导航了（不管是谁发起的：首次导航、地址栏、页面自身跳转）：
+        // 首次导航目标就此消费掉。不消费的话，一旦 tryLoadPending 超时放弃，
+        // 那个陈旧 URL 会留在实例上，等下一次 about:blank 的 onPageEnd 把用户拽回去。
+        const startedUrl = event?.url ?? '';
+        if (startedUrl !== '' && startedUrl !== 'about:blank') {
+          this.initialLoadStarted = true;
+          this.pendingUrl = '';
+        }
         // 新一次主框架导航开始：提交前都不算 committed
         this.mainFrameCommitted = false;
         this.subresourceWarned = false;

@@ -5,6 +5,7 @@ import { UrlLite } from '../domain/UrlLite';
 import { Site } from '../domain/model/Site';
 import { TabList, TabMeta, NewTabResult, DEFAULT_MAX_TABS } from '../domain/TabList';
 import { SaveOutcome } from '../domain/BookmarkService';
+import { BlockedCards } from '../domain/BlockedCards';
 import { CertReminderNotifier } from '../domain/ServerCertReminderService';
 import { HomeView } from '../ui/HomeView';
 import { BrowserWeb } from '../ui/BrowserWeb';
@@ -49,11 +50,10 @@ struct Index {
   /** 当前标签要展示的拦截地址（空 = 不展示卡片）。URL 必须留在界面上让用户能复制走。 */
   @State blockedUrl: string = '';
   /**
-   * 按标签记住被拦地址（tabId → url），**只在内存里**，绝不落盘：
-   * 落盘的话冷启动恢复会拿一个必然再被拦的地址去导航，还会把用户上次真正在看的页面顶掉。
-   * 切回该标签时靠它把卡片重新挂上，避免「地址栏有 URL、页面空白、卡片却没了」。
+   * 拦截卡片 + 「文档已卸载」两个状态机（见 domain/BlockedCards）。
+   * **只在内存里**：落盘时只取 persistedUrlOf()，被卸载的标签存空串，活页面原样保留自己的 URL。
    */
-  private blockedByTab: Map<number, string> = new Map<number, string>();
+  private cards: BlockedCards = new BlockedCards();
   /** 本轮是否已经"退回主页覆盖层"过一次（用于让返回键有终点，不再死循环） */
   private backHomeOnce: boolean = false;
   /** persistTabs 节流时间戳（pageEnd 可能很密集，不必每次都写 preferences） */
@@ -189,7 +189,7 @@ struct Index {
     }
     // 被拦标签存空串：它当下没有有效文档，存被拦 URL 只会让下次恢复把一个必然被拒的地址
     // 再导航一遍（或整标签被白名单过滤掉，把用户真正在看的页面顶掉）。
-    const urls: string[] = all.map((t: TabMeta): string => this.blockedByTab.has(t.id) ? '' : t.url);
+    const urls: string[] = all.map((t: TabMeta): string => this.cards.persistedUrlOf(t.id, t.url));
     let idx = 0;
     for (let i = 0; i < all.length; i++) {
       if (all[i].id === this.tabList.currentId()) {
@@ -202,7 +202,7 @@ struct Index {
   private dropEvicted(evicted: number[]): void {
     for (const id of evicted) {
       this.controllers.delete(id);
-      this.blockedByTab.delete(id);
+      this.cards.forget(id);
     }
   }
 
@@ -228,10 +228,6 @@ struct Index {
    * @param reuseCurrent true = 在当前标签加载（书签点击/地址栏提交）；false = 新开标签
    */
   private openUrl(raw: string, reuseCurrent: boolean): void {
-    this.blockedUrl = '';
-    if (this.currentId >= 0) {
-      this.blockedByTab.delete(this.currentId);
-    }
     const url = UrlLite.withHttpsPrefix(raw);
     if (url === '') {
       return;
@@ -247,6 +243,13 @@ struct Index {
     if (!AppGraph.domainWhitelist().allows(url)) {
       this.toast('该域名不在允许访问的白名单内');
       return;
+    }
+    // 到这里才确定「真的要导航」：此刻清卡片才安全。校验失败早退时，
+    // 地址栏、页面、卡片必须都保持原样（否则就是「输错一个地址，卡片凭空消失」）。
+    // 另开标签（reuseCurrent=false）不动源标签的卡片状态：源标签既不导航也不改变。
+    if (reuseCurrent && this.currentId >= 0) {
+      this.cards.navigate(this.currentId);
+      this.blockedUrl = '';
     }
     // last_url 只在页面真正加载完成时写（onTabPageEnd），
     // 否则加载失败/被白名单兜底卸载的地址也会被记成「上次访问」，下次冷启动恢复成打不开的页。
@@ -278,6 +281,11 @@ struct Index {
    * 重试耗尽才提示，避免「刚建标签就点书签」被一次 80ms 的运气决定成败。
    */
   private loadWithRetry(tabId: number, url: string, left: number): void {
+    // 重试阶段标签已被关掉/淘汰：不能再用 controllerOf（它会给未知 id 新建一个
+    // controller 塞进 Map，永不回收），也无必要提示用户。
+    if (left < OPEN_RETRY_LEFT && !this.controllers.has(tabId)) {
+      return;
+    }
     try {
       this.controllerOf(tabId).loadUrl(url);
       return;
@@ -291,6 +299,27 @@ struct Index {
     setTimeout(() => {
       this.loadWithRetry(tabId, url, left - 1);
     }, OPEN_RETRY_INTERVAL_MS);
+  }
+
+  /**
+   * 点链接另开标签。
+   * - 已有同 URL 的标签：直接切过去（连点/双击不重复建标签；也顺手挡住
+   *   内核重复回调导致的标签疯长）
+   * - 标签已满：覆盖当前标签，而不是 LRU 淘汰别人——被淘汰的可能是正在
+   *   填表/上传/下载的那一个，且淘汰时不会有任何提示
+   */
+  private openInNewTab(url: string): void {
+    for (const t of this.tabList.all()) {
+      if (t.url === url) {
+        this.selectTab(t.id);
+        return;
+      }
+    }
+    if (this.tabList.size() >= DEFAULT_MAX_TABS) {
+      this.openUrl(url, true);
+      return;
+    }
+    this.openUrl(url, false);
   }
 
   private newTab(): void {
@@ -314,7 +343,7 @@ struct Index {
       // 首次导航由 BrowserWeb 自己在 active 变 true 时补上（隐藏状态下控制器没就绪，
       // 父层隔空 loadUrl 会静默失败 → 切过去永远白屏）。
       // 被拦过又没重新加载的标签：卡片要跟着回来，否则地址栏有 URL、页面空白、卡片没了
-      this.blockedUrl = this.blockedByTab.get(id) ?? '';
+      this.blockedUrl = this.cards.cardUrlOf(id);
       // 恢复该标签自己的进度（它可能仍在加载）
       this.progress = this.tabList.progressOf(id);
       this.syncTabs();
@@ -326,11 +355,11 @@ struct Index {
     const wasCurrent = id === this.tabList.currentId();
     const remaining = this.tabList.close(id);
     this.controllers.delete(id);
-    this.blockedByTab.delete(id);
+    this.cards.forget(id);
     if (wasCurrent) {
       this.progress = remaining < 0 ? 0 : this.tabList.progressOf(remaining);
       // 当前标签被关掉后，卡片要跟着新的当前标签走（关掉的正好是被拦标签时卡片必须消失）
-      this.blockedUrl = remaining < 0 ? '' : (this.blockedByTab.get(remaining) ?? '');
+      this.blockedUrl = remaining < 0 ? '' : this.cards.cardUrlOf(remaining);
     }
     if (remaining < 0) {
       this.showHome = true;
@@ -344,9 +373,9 @@ struct Index {
     const closed = this.tabList.closeOthers(id);
     for (const cid of closed) {
       this.controllers.delete(cid);
-      this.blockedByTab.delete(cid);
+      this.cards.forget(cid);
     }
-    this.blockedUrl = this.blockedByTab.get(id) ?? '';
+    this.blockedUrl = this.cards.cardUrlOf(id);
     this.showHome = false;
     this.switcherVisible = false;
     this.toast('已关闭其他标签');
@@ -372,7 +401,7 @@ struct Index {
     this.homeOverlay = false;
     // 回主页时卡片收起（showHomeLayer 清过），回到浏览态必须按当前标签重新挂上，
     // 否则又是一屏「地址栏有被拦 URL、页面空白、卡片没有」。
-    this.blockedUrl = this.blockedByTab.get(this.tabList.currentId()) ?? '';
+    this.blockedUrl = this.cards.cardUrlOf(this.tabList.currentId());
   }
 
   private removeSite(site: Site): void {
@@ -437,7 +466,7 @@ struct Index {
       return; // 空标签页不写入 tab.url：概览层与地址栏保持占位文案
     }
     // 真的有一页加载成功 → 之前那张拦截卡片与该标签的拦截记忆都该消失
-    this.blockedByTab.delete(id);
+    this.cards.pageEnd(id);
     if (id === this.tabList.currentId()) {
       this.blockedUrl = '';
     }
@@ -459,19 +488,28 @@ struct Index {
    * 都拿不到，更别说复制。现在把 URL 留在标签上（地址栏可见、可选中复制），
    * 同时弹一张拦截卡片，提供「复制链接」。
    */
-  private onTabBlocked(id: number, blockedUrl: string, unloaded: boolean): void {
-    this.blockedByTab.set(id, blockedUrl);
-    if (unloaded) {
-      // 文档已被卸成 about:blank：地址栏显示这条失败地址（等同浏览器的错误页），
-      // 既不会和页面内容打架，也顺手成了第二个可复制的入口。
-      this.tabList.update(id, blockedUrl);
+  /** 用户主动收起卡片（「知道了」/ 返回键）：连 map 一起清，否则切标签回来它会复活 */
+  private dismissCard(): void {
+    const id = this.tabList.currentId();
+    if (id >= 0) {
+      this.cards.dismiss(id);
     }
-    // unloaded=false：页面还停在原处，地址栏必须保持原样，只在卡片里给出被拦地址。
-    // 但无论哪条路径，这个标签的标题/进度都属于"上一页"，不清掉就会在标签概览里
-    // 出现「旧标题 + 被拦 URL」这种自相矛盾的条目。
-    this.tabList.rename(id, '');
+    this.blockedUrl = '';
+  }
+
+  private onTabBlocked(id: number, blockedUrl: string, unloaded: boolean): void {
+    this.cards.block(id, blockedUrl, unloaded);
+    if (unloaded) {
+      // 文档已被卸成 about:blank：没有有效文档，地址栏显示这条失败地址（等同错误页），
+      // 既不会和页面内容打架，也顺手成了第二个可复制的入口。
+      // 标题/进度属于"上一页"，一并清掉，否则概览层出现「旧标题 + 被拦 URL」。
+      this.tabList.update(id, blockedUrl);
+      this.tabList.rename(id, '');
+    }
+    // unloaded=false：页面还停在原处。**地址栏、标题、tab.url、落盘 URL 都必须保持原样**，
+    // 被拦地址只出现在卡片里（把它写进去，等于把活页面从会话里抹掉）。
     this.tabList.setProgress(id, 0);
-    this.persistTabs(); // 立即落盘（被拦标签会被写成空串），别等节流窗口
+    this.persistTabs(); // 立即落盘：只有「已卸载」的标签会被写成空串
     if (id === this.tabList.currentId()) {
       this.progress = 0;
       this.blockedUrl = blockedUrl;
@@ -543,7 +581,7 @@ struct Index {
             .fontColor('#1F1F1F')
             .backgroundColor('#F2F3F5')
             .onClick(() => {
-              this.blockedUrl = '';
+              this.dismissCard();
             })
         }
         .width('100%')
@@ -587,7 +625,7 @@ struct Index {
       return true;
     }
     if (this.blockedUrl !== '') {
-      this.blockedUrl = '';
+      this.dismissCard();
       return true;
     }
     if (this.switcherVisible) {
@@ -722,9 +760,12 @@ struct Index {
               onPageEnd: (tabId: number, u: string): void => this.onTabPageEnd(tabId, u),
               onBlocked: (tabId: number, blockedUrl: string, unloaded: boolean): void =>
                 this.onTabBlocked(tabId, blockedUrl, unloaded),
-              // 点链接另开标签：复用已有的 openUrl(reuseCurrent=false) —— 建标签、切过去、
-              // 由新 BrowserWeb 的 initialUrl 首次导航，走的是已经验证过的同一条路径。
-              onOpenInNewTab: (url: string): void => this.openUrl(url, false)
+              // 点链接另开标签。放到下一拍执行：这里是内核的同步回调栈，
+              // 在回调里直接新增 Web 组件（改 tabIds → ForEach 建 BrowserWeb）容易踩到
+              // 「回调栈内重建组件」；本次导航已由 return true 取消，晚一拍不影响语义。
+              onOpenInNewTab: (url: string): void => {
+                setTimeout(() => this.openInNewTab(url), 0);
+              }
             })
               .visibility(id === this.currentId ? Visibility.Visible : Visibility.None)
           }, (id: number): string => id.toString())
@@ -777,7 +818,7 @@ struct Index {
       }
 
       // ---------- 白名单拦截提示（URL 可复制，避免「拦了又抄不出来」） ----------
-      if (this.blockedUrl !== '') {
+      if (this.blockedUrl !== '' && !this.showHome) {
         this.blockedLayer()
       }
     }

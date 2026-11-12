@@ -88,7 +88,7 @@ entry/src/main/ets/
 1. **白名单是主边界，但只覆盖主框架，且不拦内网地址**：`onLoadIntercept`（发起时）+ `onNavigationEntryCommitted`（提交后）两道闸；后者在非白名单提交时会 `stop()` 并**把文档卸载回 about:blank**（只 stop 是假拦截——脚本早就跑了）。被拦 URL 会写回 `tab.url` 并弹拦截卡片，**URL 可选中复制、也有「复制链接」按钮**——拦了又抄不走是死局，用户连「自己被拦的是什么地址」都拿不到。
    **内网/本机地址一律放行**（`domain/LocalNetwork`）：IPv4 私有段 10/8、172.16/12、192.168/16、回环 127/8、链路本地 169.254/16，IPv6 回环与 ULA/链路本地，`localhost`、`*.local`、以及不含点的单标签主机名（`nas`、`router`）。理由：白名单用来挡公网误入，内网可达性由所在网络决定，浏览器白名单不是网络边界；要求把 NAS/路由器地址抄进名单只会制造"忘了加就整站不可用"的假故障。**公网域名与公网 IP 仍然必须命中名单。**
    子框架/子资源与 Android 一样不受白名单约束，这是明知的边界，别当成已覆盖。
-   **两条拦截路径对界面状态的影响不同，别当成一条**：`onNavigationEntryCommitted` 是「提交后拦截」，文档已被卸成 `about:blank`，地址栏显示这条失败地址（等同浏览器错误页）；`onLoadIntercept` 是「发起时拦截」，当前页面还停着，**地址栏绝不能改写**，被拦地址只在拦截卡片里给出。卡片状态按标签记在 `Index.blockedByTab`（内存，不落盘），切回标签会重新挂上，页面加载成功 / 关标签 / 主动输新地址时解除。
+   **两条拦截路径对界面状态的影响不同，别当成一条**：`onNavigationEntryCommitted` 是「提交后拦截」，文档已被卸成 `about:blank`，地址栏显示这条失败地址（等同浏览器错误页）；`onLoadIntercept` 是「发起时拦截」，当前页面还停着，**地址栏绝不能改写**，被拦地址只在拦截卡片里给出。卡片状态由 `domain/BlockedCards` 统一管理，**两个状态必须分开**：`cards`（tabId→被拦 URL，只管界面卡片）与 `unloaded`（文档确实已被卸载）。落盘只取 `persistedUrlOf()`——只有 `unloaded` 的标签存空串，**活页面必须原样保留自己的 URL**（曾经把两者混成一个 Map，导致「点一个白名单外链接，正在看的那个页面被持久化成空串」）。六个入口 `block / dismiss / navigate / pageEnd / forget / cardUrlOf` 缺一不可：`dismiss`（「知道了」/返回键）少一行，卡片就会在切标签回来后复活。
    **已知副作用（有意接受）**：内网放行后，任何已放行的公网页面都能用顶层导航把浏览器带到内网设备（`location='http://192.168.0.1/…'`，CSRF 面变大）。以前这些地址被白名单挡住。要收紧就得给内网导航加「必须可归因为用户操作」的一次性令牌，目前没做。
 2. **危险 scheme 不外抛**：`file:` / `javascript:` / `data:` / `blob:` / `content:` / `about:` 一律 `BLOCK`；其余只放行 `mailto` / `tel` / `sms` / `geo`，未知深链 scheme 也 `BLOCK`。**与 Android 的有意偏离**。补充事实：`onLoadIntercept` 的 `WebResourceRequest` **确实**带 `isRequestGesture()`（见第 9 条），但外部 scheme 这条策略刻意不对它做区分——放行与否是「这个 scheme 会不会造成副作用外溢」的问题，不是「谁触发的」的问题。
 3. **备份能力未接入（有意）**：module.json5 里没有 `type: "backup"` 的 `extensionAbilities`，`backup_config.json` 也没有——所以系统备份根本不会带上本应用数据（这是真正的保证，不是靠配置里的 `allowToBackupRestore`）。preferences 里有书签、按站点的证书 keyUri、lastUrl，不该随云备份外流；单用户自托管工具也没有跨端恢复需求。**若将来要接备份，必须保持 `allowToBackupRestore: false` 并把 preferences 排除在外。**
@@ -98,7 +98,10 @@ entry/src/main/ets/
 7. **客户端证书只发给白名单站点**：`onClientAuthenticationRequest` 的来源 host 不在白名单时直接 `ignore()`，防止白名单页面里嵌的第三方 iframe 骗取私钥使用授权。
 8. **400 清理必须先有 mTLS 事实**：只有本标签确实在该 host 完成过客户端证书握手，才允许销毁用户的证书绑定；`clearClientAuthenticationCache` 不可用时提示词会如实降级。
 
-9. **链接点击另开标签，判定只用 ArkWeb 给的请求事实**：`onLoadIntercept` 在**白名单放行之后**才调 `domain/LinkOpenPolicy.shouldOpenInNewTab`，要求同时满足「主框架 + `isRequestGesture()` 为真 + 非 `isRedirect()` + GET + http(s) + 目标与当前页去掉 `#hash` 后不同」。少一条就留在原标签：否则 302/OAuth 回跳会裂出多个标签、POST 表单换标签会丢提交上下文、SPA 自动跳转会把标签刷满。**被白名单拦住的链接不裂标签**（先拦后判），避免「新标签 + 另一张拦截卡片」两个坑。`target=_blank` 的链接因 `multiWindowAccess` 保持关闭，走的是同一条主框架导航路径，不需要 `onWindowNew`/`setWebController` 那套多窗口机制。新标签复用 `openUrl(url, reuseCurrent=false)`（建标签 → 由新 `BrowserWeb` 的 `initialUrl` 首次导航），标签上限与 LRU 淘汰仍由 `TabList` 统一负责。
+9. **链接点击另开标签，判定只用 ArkWeb 给的请求事实**：`onLoadIntercept` 的判定顺序由 `domain/InterceptDecision.decideIntercept` 统一（scheme 闸门 → **白名单** → 裂标签 → 放行），顺序本身有断言守着；`domain/LinkOpenPolicy.shouldOpenInNewTab` 要求同时满足「主框架 + `isRequestGesture()` 为真 + 非 `isRedirect()` + GET + http(s) + 目标与当前页去掉 `#hash` 后不同」。少一条就留在原标签：否则 302/OAuth 回跳会裂出多个标签、POST 表单换标签会丢提交上下文、SPA 自动跳转会把标签刷满。
+   **已知策略上限（不是 bug）**：ArkWeb 的 `WebResourceRequest` 无法区分「点链接」与「GET 表单提交」，所以站内搜索框/筛选表单回车也会裂标签。要撤销只能做成设置开关，目前默认开。
+   **被白名单拦住的链接不裂标签**（先拦后判），避免「新标签 + 另一张拦截卡片」两个坑。**已有同 URL 标签时直接切过去**（连点/双击不重复建，也兜住内核重复回调）；**标签已满（`DEFAULT_MAX_TABS=4`）时覆盖当前标签而不是 LRU 淘汰**——被淘汰的可能是正在填表/上传/下载的那一个，且淘汰无任何提示。
+   `target=_blank` / `window.open` 靠 `BrowserWeb` 里显式 `.multiWindowAccess(false)` 落回同一条主框架导航路径（不再依赖默认值）；因此不需要 `onWindowNew`/`setWebController` 那套多窗口机制。新标签复用 `openUrl(url, reuseCurrent=false)`，且**从内核同步回调里推迟一拍**（`setTimeout 0`）再建组件，避免在回调栈内重建 UI。
 
 ## ArkTS 编码红线
 

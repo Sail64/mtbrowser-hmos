@@ -11,6 +11,8 @@ import { DefaultNavigationPolicy } from './domain/NavigationPolicy.ts';
 import { DomainWhitelist } from './domain/DomainWhitelist.ts';
 import { LocalNetwork } from './domain/LocalNetwork.ts';
 import { shouldOpenInNewTab } from './domain/LinkOpenPolicy.ts';
+import { BlockedCards } from './domain/BlockedCards.ts';
+import { InterceptAction, decideIntercept } from './domain/InterceptDecision.ts';
 import { fileNameFrom, sanitizeFileName, extensionForMime } from './domain/FileName.ts';
 import { suffixFilters } from './domain/AcceptTypes.ts';
 import { parseAsn1Time } from './domain/Asn1Time.ts';
@@ -399,6 +401,72 @@ ok(shouldOpenInNewTab({ ...baseLink, currentUrl: '' }),
   'link: empty current url still opens new tab');
 ok(shouldOpenInNewTab({ ...baseLink, method: undefined as unknown as string }),
   'link: undefined method treated as GET');
+
+
+// —— LinkOpenPolicy 补充边界（ArkWeb 可能给出的奇怪输入）——
+ok(shouldOpenInNewTab({ ...baseLink, url: 'HTTPS://b.example.org/x' }),
+  'link: uppercase scheme still opens new tab');
+ok(!shouldOpenInNewTab({ ...baseLink, currentUrl: 'about:blank', url: 'about:blank' }),
+  'link: blank current + blank target stays');
+ok(shouldOpenInNewTab({ ...baseLink, currentUrl: 'about:blank' }),
+  'link: real url from blank page opens new tab');
+ok(!shouldOpenInNewTab({ ...baseLink, isRedirect: true, method: 'POST' }),
+  'link: redirect+post still stays');
+ok(shouldOpenInNewTab({ ...baseLink, url: '  https://b.example.org/x  ' }),
+  'link: surrounding whitespace tolerated');
+
+// —— InterceptDecision：顺序即安全语义 ——
+const linkFacts = {
+  isMainFrame: true, isRequestGesture: true, isRedirect: false,
+  method: 'GET', url: 'https://b.example.org/x', currentUrl: 'https://a.example.org/'
+};
+ok(decideIntercept(NavigationDecision.OPEN_EXTERNAL, true, linkFacts) === InterceptAction.OPEN_EXTERNAL,
+  'intercept: external scheme wins over everything');
+ok(decideIntercept(NavigationDecision.BLOCK, false, linkFacts) === InterceptAction.BLOCK_SCHEME,
+  'intercept: dangerous scheme blocked even for non-whitelisted host');
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, false, linkFacts) === InterceptAction.BLOCK_WHITELIST,
+  'intercept: whitelist check runs BEFORE split');
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, true, linkFacts) === InterceptAction.NEW_TAB,
+  'intercept: allowed + gesture link splits');
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, true, { ...linkFacts, isRequestGesture: false }) === InterceptAction.LOAD,
+  'intercept: allowed but script nav loads in place');
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, true, { ...linkFacts, isMainFrame: false }) === InterceptAction.LOAD,
+  'intercept: subframe loads in place (never splits)');
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, true, { ...linkFacts, isMainFrame: false, isRequestGesture: true }) !== InterceptAction.BLOCK_WHITELIST,
+  'intercept: subframe is never whitelist-blocked');
+
+// —— BlockedCards：两个状态必须分开（活页面不许被持久化成空串）——
+const bc = new BlockedCards();
+bc.block(1, 'https://evil.example/', false);
+ok(bc.cardUrlOf(1) === 'https://evil.example/', 'cards: initiate-block shows card');
+ok(!bc.isUnloaded(1), 'cards: initiate-block does NOT mark unloaded');
+ok(bc.persistedUrlOf(1, 'https://alive.example/page') === 'https://alive.example/page',
+  'cards: live page keeps its URL when persisted (regression)');
+bc.block(2, 'https://evil2.example/', true);
+ok(bc.isUnloaded(2) && bc.persistedUrlOf(2, 'https://evil2.example/') === '',
+  'cards: committed-block persists empty url');
+
+// 关掉卡片后不许复活
+bc.dismiss(1);
+ok(bc.cardUrlOf(1) === '', 'cards: dismiss hides card');
+ok(bc.cardUrlOf(2) === 'https://evil2.example/', 'cards: dismiss is per-tab');
+// 关掉卡片不改变「文档已卸载」这一事实
+ok(bc.persistedUrlOf(2, 'https://evil2.example/') === '', 'cards: dismiss keeps unloaded fact');
+
+// 切标签回来（读 cardUrlOf）不再复活
+ok(bc.cardUrlOf(1) === '', 'cards: no revive after dismiss + tab switch');
+
+// 真正导航 / 页面加载成功 / 关标签
+bc.block(3, 'https://evil3.example/', true);
+bc.navigate(3);
+ok(!bc.isUnloaded(3) && bc.persistedUrlOf(3, 'https://ok.example/') === 'https://ok.example/',
+  'cards: navigate clears unloaded + card');
+bc.block(4, 'https://evil4.example/', true);
+bc.pageEnd(4);
+ok(!bc.hasCard(4) && !bc.isUnloaded(4), 'cards: pageEnd clears both');
+bc.block(5, 'https://evil5.example/', true);
+bc.forget(5);
+ok(!bc.hasCard(5) && !bc.isUnloaded(5) && bc.cardUrlOf(5) === '', 'cards: forget clears both (close/evict)');
 
 console.log(`SMOKE RESULT: pass=${pass} fail=${fail}`);
 if (fail > 0) { process.exit(1); }
