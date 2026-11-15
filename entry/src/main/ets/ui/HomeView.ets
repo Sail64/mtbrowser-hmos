@@ -73,18 +73,29 @@ export struct HomeView {
           .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .layoutWeight(1)
-        Text('设置')
-          .fontSize(14)
-          .fontColor('#6B7280')
-          .padding({ left: 8, right: 12, top: 6, bottom: 6 })
-          .onClick(() => this.onOpenSettings())
-        Button('＋ 添加')
-          .fontSize(14)
-          .fontColor(Color.White)
-          .backgroundColor('#1F1F1F')
-          .height(34)
-          .borderRadius(8)
-          .onClick(() => this.showEditor(null))
+        // 设置 / 新建：同一套线性图标（24×24、stroke #3D3D3D、圆头），
+        // 触摸区固定 36×36 保证手指够得着，图标本身只按 22 绘制。
+        Stack() {
+          Image($r('app.media.ic_settings'))
+            .width(22)
+            .height(22)
+            .draggable(false)
+        }
+        .width(36)
+        .height(36)
+        .margin({ left: 2 })
+        .onClick(() => this.onOpenSettings())
+
+        Stack() {
+          Image($r('app.media.ic_plus'))
+            .width(22)
+            .height(22)
+            .draggable(false)
+        }
+        .width(36)
+        .height(36)
+        .margin({ left: 2 })
+        .onClick(() => this.showEditor(null))
       }
       .width('100%')
       .padding({ left: 16, right: 16, top: 12, bottom: 12 })

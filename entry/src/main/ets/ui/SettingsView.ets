@@ -1,5 +1,5 @@
 import { AppGraph } from '../app/AppGraph';
-import { DEFAULT_LOCK_TIMEOUT_MIN, LOCK_TIMEOUT_OPTIONS, normalizeLockTimeout } from '../domain/LockPolicy';
+import { DEFAULT_LOCK_TIMEOUT_MIN, normalizeLockTimeout } from '../domain/LockPolicy';
 
 /**
  * 设置页（覆盖层）。只碰 AppGraph 暴露的口子：
@@ -9,7 +9,8 @@ import { DEFAULT_LOCK_TIMEOUT_MIN, LOCK_TIMEOUT_OPTIONS, normalizeLockTimeout } 
 @Component
 export struct SettingsView {
   @State lockEnabled: boolean = false;
-  @State timeoutMin: number = DEFAULT_LOCK_TIMEOUT_MIN;
+  /** 输入框里的文本（用户可能正处于编辑中间态，例如空串） */
+  @State timeoutText: string = String(DEFAULT_LOCK_TIMEOUT_MIN);
   @State biometricOk: boolean = true;
   @State hint: string = '';
   onClose: () => void = (): void => {};
@@ -20,12 +21,13 @@ export struct SettingsView {
     const s = AppGraph.settings();
     this.lockEnabled = s.getLockEnabled();
     const stored = s.getLockTimeoutMinutes();
-    this.timeoutMin = stored < 0 ? DEFAULT_LOCK_TIMEOUT_MIN : normalizeLockTimeout(stored);
+    const min = stored < 0 ? DEFAULT_LOCK_TIMEOUT_MIN : normalizeLockTimeout(stored);
+    this.timeoutText = String(min);
     this.biometricOk = AppGraph.biometricAvailable();
     if (!this.biometricOk) {
       this.hint = '本机未录入指纹（或指纹被系统锁定），无法启用指纹锁';
     } else if (this.lockEnabled) {
-      this.hint = '离开应用超过设定时间后，回到前台需要指纹解锁';
+      this.hint = '回到前台需要指纹解锁；填 0 表示一离开就锁';
     }
   }
 
@@ -39,8 +41,8 @@ export struct SettingsView {
     const s = AppGraph.settings();
     s.setLockEnabled(on);
     if (on) {
-      s.setLockTimeoutMinutes(this.timeoutMin);
-      this.hint = '离开应用超过设定时间后，回到前台需要指纹解锁';
+      s.setLockTimeoutMinutes(this.committedTimeout());
+      this.hint = '回到前台需要指纹解锁；填 0 表示一离开就锁';
     } else {
       // 关掉后清时间戳，避免"关了又开"立刻被判定超时
       AppGraph.clearLockClock();
@@ -48,9 +50,36 @@ export struct SettingsView {
     }
   }
 
-  private pickTimeout(min: number): void {
-    this.timeoutMin = min;
-    AppGraph.settings().setLockTimeoutMinutes(min);
+  /** 输入框文本 → 合法分钟数（空串走默认值） */
+  private committedTimeout(): number {
+    const raw = this.timeoutText.trim();
+    if (raw === '') {
+      return DEFAULT_LOCK_TIMEOUT_MIN;
+    }
+    return normalizeLockTimeout(Number(raw));
+  }
+
+  /** 边输边存：只存合法值，且不让空串把已存的值抹掉 */
+  private onTimeoutInput(raw: string): void {
+    // 只保留数字：InputType.Number 在个别输入法下仍可能带符号/空格
+    let digits = '';
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw.charAt(i);
+      if (ch >= '0' && ch <= '9') {
+        digits = digits + ch;
+      }
+    }
+    this.timeoutText = digits;
+    if (digits !== '') {
+      AppGraph.settings().setLockTimeoutMinutes(normalizeLockTimeout(Number(digits)));
+    }
+  }
+
+  /** 失焦/提交时把文本回写成合法值（空串 → 回到已存的值） */
+  private settleTimeout(): void {
+    const stored = AppGraph.settings().getLockTimeoutMinutes();
+    const min = stored < 0 ? DEFAULT_LOCK_TIMEOUT_MIN : normalizeLockTimeout(stored);
+    this.timeoutText = String(min);
   }
 
   build() {
@@ -100,18 +129,29 @@ export struct SettingsView {
             .fontColor('#1F1F1F')
             .width('100%')
           Row({ space: 8 }) {
-            ForEach(LOCK_TIMEOUT_OPTIONS, (min: number) => {
-              Text(min === 0 ? '立即' : `${min} 分钟`)
-                .fontSize(13)
-                .fontColor(this.timeoutMin === min ? Color.White : '#1F1F1F')
-                .backgroundColor(this.timeoutMin === min ? '#1F1F1F' : '#F2F3F5')
-                .borderRadius(8)
-                .padding({ left: 12, right: 12, top: 7, bottom: 7 })
-                .onClick(() => this.pickTimeout(min))
-            }, (min: number) => min.toString())
+            Text('离开')
+              .fontSize(14)
+              .fontColor('#3D3D3D')
+            TextInput({ text: this.timeoutText })
+              .type(InputType.Number)
+              .maxLength(4)
+              .width(58)
+              .height(34)
+              .fontSize(14)
+              .fontColor('#1F1F1F')
+              .textAlign(TextAlign.Center)
+              .backgroundColor('#F2F3F5')
+              .borderRadius(8)
+              .onChange((value: string) => this.onTimeoutInput(value))
+              .onSubmit(() => this.settleTimeout())
+              .onBlur(() => this.settleTimeout())
+            Text('分钟后自动锁定')
+              .fontSize(14)
+              .fontColor('#3D3D3D')
+            Blank()
           }
           .width('100%')
-          .justifyContent(FlexAlign.Start)
+          .alignItems(VerticalAlign.Center)
 
           Button('立即锁定')
             .width('100%')

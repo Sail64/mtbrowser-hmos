@@ -105,6 +105,7 @@ entry/src/main/ets/
 
 ## 指纹锁 / 自动锁定
 
+- **超时时长由用户手填**（`离开 [__] 分钟后自动锁定`，默认 5）：`normalizeLockTimeout` 负责收敛——非有限数/负数回落默认 5、超过一天收敛到 1440、小数截断。**不要**改回固定档位（1/5/15/30），用户要的是任意值。
 - **分层**：`domain/LockPolicy`（纯函数：离开多久算超时、脏数据收敛、文案）→ `data/SettingsStore`（三个键：`lock_enabled` / `lock_timeout_min` / `lock_last_bg_at`）→ `platform/BiometricAuth`（`userAuth.getUserAuthInstance` 的一次性实例封装）→ `app/AppGraph`（`shouldLockNow` / `authenticateBiometric` / `noteAppBackground` / `clearLockClock`）→ `ui/LockScreen` 与 `ui/SettingsView`。UI 不直连 platform（check-arch R3）。
 - **三条硬规则**（都是"别把用户锁在门外"）：
   1. `getAvailableStatus()` 抛异常 = 不可用。**指纹不可用时一律不上锁**，而不是锁住解不开。

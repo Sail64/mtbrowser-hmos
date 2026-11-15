@@ -14,18 +14,29 @@ export enum LockOutcome {
   UNAVAILABLE = 3
 }
 
-/** 可选的后台停留时长（分钟）。0 = 立即锁定 */
-export const LOCK_TIMEOUT_OPTIONS: number[] = [0, 1, 5, 15, 30];
+/** 允许用户手填的范围（分钟）：0 = 立即锁定，上限一天 */
+export const MIN_LOCK_TIMEOUT_MIN: number = 0;
+export const MAX_LOCK_TIMEOUT_MIN: number = 1440;
 export const DEFAULT_LOCK_TIMEOUT_MIN: number = 5;
 
-/** 把任意输入收敛到受支持的取值，脏数据回落到默认值 */
+/**
+ * 把任意输入收敛到合法取值。用户是**手填**的，必须能接住空、负数、超大值、小数：
+ * - 非有限数（NaN/Infinity）→ 默认值
+ * - 负数 → 默认值（"手滑输入 -5" 不等于"立即锁定"）
+ * - 超过一天 → 收敛到上限，而不是静默回落成 5（用户意图要保留）
+ */
 export function normalizeLockTimeout(minutes: number): number {
-  for (const opt of LOCK_TIMEOUT_OPTIONS) {
-    if (opt === minutes) {
-      return opt;
-    }
+  if (!Number.isFinite(minutes)) {
+    return DEFAULT_LOCK_TIMEOUT_MIN;
   }
-  return DEFAULT_LOCK_TIMEOUT_MIN;
+  const n: number = Math.trunc(minutes);
+  if (n < MIN_LOCK_TIMEOUT_MIN) {
+    return DEFAULT_LOCK_TIMEOUT_MIN;
+  }
+  if (n > MAX_LOCK_TIMEOUT_MIN) {
+    return MAX_LOCK_TIMEOUT_MIN;
+  }
+  return n;
 }
 
 /** 回到前台时是否必须解锁 */
