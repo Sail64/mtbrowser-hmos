@@ -103,6 +103,18 @@ entry/src/main/ets/
    **被白名单拦住的链接不裂标签**（先拦后判），避免「新标签 + 另一张拦截卡片」两个坑。**已有同 URL 标签时直接切过去**（连点/双击不重复建，也兜住内核重复回调）；**标签已满（`DEFAULT_MAX_TABS=4`）时覆盖当前标签而不是 LRU 淘汰**——被淘汰的可能是正在填表/上传/下载的那一个，且淘汰无任何提示。
    `target=_blank` / `window.open` 靠 `BrowserWeb` 里显式 `.multiWindowAccess(false)` 落回同一条主框架导航路径（不再依赖默认值）；因此不需要 `onWindowNew`/`setWebController` 那套多窗口机制。新标签复用 `openUrl(url, reuseCurrent=false)`，且**从内核同步回调里推迟一拍**（`setTimeout 0`）再建组件，避免在回调栈内重建 UI。
 
+## 指纹锁 / 自动锁定
+
+- **分层**：`domain/LockPolicy`（纯函数：离开多久算超时、脏数据收敛、文案）→ `data/SettingsStore`（三个键：`lock_enabled` / `lock_timeout_min` / `lock_last_bg_at`）→ `platform/BiometricAuth`（`userAuth.getUserAuthInstance` 的一次性实例封装）→ `app/AppGraph`（`shouldLockNow` / `authenticateBiometric` / `noteAppBackground` / `clearLockClock`）→ `ui/LockScreen` 与 `ui/SettingsView`。UI 不直连 platform（check-arch R3）。
+- **三条硬规则**（都是"别把用户锁在门外"）：
+  1. `getAvailableStatus()` 抛异常 = 不可用。**指纹不可用时一律不上锁**，而不是锁住解不开。
+  2. 系统时间被回拨（`now < lastBackgroundAt`）**判为超时**（fail-closed）：宁可多要一次指纹。
+  3. 冷启动（进程被杀）**等价于离开很久** → 开了锁就必须先解锁。
+- **UserAuthInstance 是一次性的**：每次解锁都要重新 `getUserAuthInstance()`；复用同一实例第二次 `start()` 不会回调，锁屏会永远解不开。`skipLockedBiometricAuth: true` 让系统锁定态直接失败返回，而不是弹一个过不去的框。
+- **前台信号走 AppStorage，不直接操作 UI**：`EntryAbility.onForeground` 只把 `lock_fg_tick` +1，页面用 `@StorageLink + @Watch` 收到后再问 `AppGraph.shouldLockNow()`。Ability 不持有页面引用，页面也不轮询。
+- **锁屏态吞掉返回键**（返回键不能成为绕过指纹的通道）；要离开应用请用系统 Home。
+- **这不是加密**：它只是盖在 UI 上的一道闸。preferences 里的站点/书签、Web 内核里的页面内存、以及任务切换器里的最近任务缩略图都**没有**被加密或遮蔽。要用系统级隐私（禁止截屏/遮蔽最近任务）需要额外接 `setWindowPrivacyMode`，目前**没接**，别在 README 里宣称"数据已加密"。
+
 ## ArkTS 编码红线
 
 写任何 `.ets` 前读 [arkts-redzone-rules.md](arkts-redzone-rules.md)。要点：禁 `any`/`unknown`、对象字面量必须显式类型标注、enum 无 `.name`（用 `kindLabel()`）、`JSON.parse` 结果必须 `as` 到显式接口。

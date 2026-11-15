@@ -16,6 +16,9 @@
       },
       {
         "name": "ohos.permission.ACCESS_CERT_MANAGER"
+      },
+      {
+        "name": "ohos.permission.ACCESS_BIOMETRIC"
       }
     ],
     "abilities": [

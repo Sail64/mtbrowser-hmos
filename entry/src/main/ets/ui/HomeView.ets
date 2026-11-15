@@ -13,6 +13,7 @@ export struct HomeView {
   /** 覆盖层模式：从浏览会话进入，显示 ✕ 关闭并回到原页面 */
   @Prop overlayMode: boolean = false;
   onClose: () => void = (): void => {};
+  onOpenSettings: () => void = (): void => {};
   openSite: (url: string) => void = (): void => {};
   removeSite: (site: Site) => void = (): void => {};
   @State sites: Site[] = [];
@@ -72,6 +73,11 @@ export struct HomeView {
           .fontSize(22)
           .fontWeight(FontWeight.Bold)
           .layoutWeight(1)
+        Text('设置')
+          .fontSize(14)
+          .fontColor('#6B7280')
+          .padding({ left: 8, right: 12, top: 6, bottom: 6 })
+          .onClick(() => this.onOpenSettings())
         Button('＋ 添加')
           .fontSize(14)
           .fontColor(Color.White)

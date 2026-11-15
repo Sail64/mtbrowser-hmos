@@ -44,6 +44,8 @@ export default class EntryAbility extends UIAbility {
   onBackground(): void {
     // 用户把应用划掉之前必经这里：cookie 不落盘的话，重新进就要重新登录
     AppGraph.persistCookies(true);
+    // 记下离开时刻：回到前台时按「离开时长 vs 设置」决定要不要指纹解锁
+    AppGraph.noteAppBackground();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }
 
@@ -71,7 +73,10 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
-    // Ability has brought to foreground
-    hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
+    // 只发一个单调递增的信号：页面用 @StorageLink 收到后自己判断该不该锁。
+    // 不在这里直接操作 UI，Ability 不持有页面引用。
+    const tick: number = AppStorage.get<number>('lock_fg_tick') ?? 0;
+    AppStorage.setOrCreate<number>('lock_fg_tick', tick + 1);
+    hilog.info(DOMAIN, 'testTag', 'Ability onForeground, tick=%{public}d', tick + 1);
   }
 }

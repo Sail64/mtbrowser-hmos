@@ -13,6 +13,9 @@ import { TabSwitcher } from '../ui/TabSwitcher';
 import { SiteEditorDialog } from '../ui/SiteEditorDialog';
 import { ToastNotifier } from '../ui/ToastNotifier';
 import { FullscreenFab } from '../ui/FullscreenFab';
+import { LockScreen } from '../ui/LockScreen';
+import { SettingsView } from '../ui/SettingsView';
+import { LockOutcome } from '../domain/LockPolicy';
 
 /** 首次导航重试：6 次 × 120ms ≈ 720ms 内 Web 仍未 attach 才判失败 */
 const OPEN_RETRY_LEFT: number = 6;
@@ -49,6 +52,20 @@ struct Index {
   @State webH: number = 0;
   /** 当前标签要展示的拦截地址（空 = 不展示卡片）。URL 必须留在界面上让用户能复制走。 */
   @State blockedUrl: string = '';
+  // ---------- 指纹锁 ----------
+  /** 当前是否被锁屏盖住 */
+  @State locked: boolean = false;
+  /** 正在等指纹结果（防重复弹认证框） */
+  @State lockBusy: boolean = false;
+  /** 锁屏上的错误提示 */
+  @State lockMessage: string = '';
+  @State settingsVisible: boolean = false;
+  /**
+   * 前台信号：EntryAbility.onForeground 每进一次前台就把这个数 +1。
+   * 页面通过 @StorageLink 收到通知再判断"要不要锁"——比在 Ability 里直接操作 UI 干净，
+   * 也避免 Ability 与页面互相持有引用。
+   */
+  @StorageLink('lock_fg_tick') @Watch('onForegroundTick') fgTick: number = 0;
   /**
    * 拦截卡片 + 「文档已卸载」两个状态机（见 domain/BlockedCards）。
    * **只在内存里**：落盘时只取 persistedUrlOf()，被卸载的标签存空串，活页面原样保留自己的 URL。
@@ -65,10 +82,51 @@ struct Index {
   /** 统一 toast 出口（与 BrowserWeb 用同一个实现，避免两套提示风格） */
   private notifier: CertReminderNotifier | null = null;
 
+  /** 回到前台：按「离开时长 + 设置」决定是否上锁 */
+  private onForegroundTick(): void {
+    if (this.locked) {
+      return;
+    }
+    if (AppGraph.shouldLockNow()) {
+      this.lockMessage = '';
+      this.locked = true;
+    }
+  }
+
+  private unlock(): void {
+    if (this.lockBusy) {
+      return;
+    }
+    this.lockBusy = true;
+    this.lockMessage = '';
+    AppGraph.authenticateBiometric('解锁 MT浏览器').then((outcome: LockOutcome) => {
+      this.lockBusy = false;
+      if (outcome === LockOutcome.SUCCESS) {
+        this.locked = false;
+        this.lockMessage = '';
+        AppGraph.clearLockClock();
+        return;
+      }
+      if (outcome === LockOutcome.CANCELED) {
+        // 用户主动取消：留在锁屏，不报错也不放行
+        this.lockMessage = '';
+        return;
+      }
+      this.lockMessage = outcome === LockOutcome.UNAVAILABLE
+        ? '指纹不可用，请先在系统设置中录入指纹'
+        : '指纹不匹配，请重试';
+    }).catch(() => {
+      this.lockBusy = false;
+      this.lockMessage = '认证失败，请重试';
+    });
+  }
+
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
     // 内核下载委托全局注册一次（下载走内核栈才继承 mTLS/证书豁免）
     AppGraph.installDownloader(this.notifier);
+    // 冷启动（进程被杀过）等价于「离开很久」：开了指纹锁就必须先解锁再看内容
+    this.locked = AppGraph.shouldLockOnColdStart();
     // 恢复上次的会话：把所有还开着的标签一起恢复，而不是退回单一首页
     // （用户抱怨过"冷启动总是跳回固定站点"）。
     const savedTabs = AppGraph.settings().getOpenTabs();
@@ -619,6 +677,10 @@ struct Index {
   }
 
   onBackPress(): boolean {
+    // 锁屏状态：返回键不做事（不能让一个返回键绕过指纹）。要离开请用系统 Home。
+    if (this.locked) {
+      return true;
+    }
     // 返回次序与 Android 一致：退出全屏 → 关标签概览 → 关主页覆盖层 → 网页后退 → 回主页
     if (this.fullscreen) {
       this.fullscreen = false;
@@ -797,6 +859,9 @@ struct Index {
           tick: this.homeTick,
           overlayMode: this.homeOverlay,
           onClose: (): void => this.closeHomeOverlay(),
+          onOpenSettings: (): void => {
+            this.settingsVisible = true;
+          },
           openSite: (url: string): void => this.openUrl(url, true),
           removeSite: (site: Site): void => this.removeSite(site)
         })
@@ -820,6 +885,29 @@ struct Index {
       // ---------- 白名单拦截提示（URL 可复制，避免「拦了又抄不出来」） ----------
       if (this.blockedUrl !== '' && !this.showHome) {
         this.blockedLayer()
+      }
+
+      // ---------- 设置页 ----------
+      if (this.settingsVisible && !this.locked) {
+        SettingsView({
+          onClose: (): void => {
+            this.settingsVisible = false;
+          },
+          onLockNow: (): void => {
+            this.settingsVisible = false;
+            this.lockMessage = '';
+            this.locked = true;
+          }
+        })
+      }
+
+      // ---------- 锁屏（永远最上层，盖住网页与所有覆盖层） ----------
+      if (this.locked) {
+        LockScreen({
+          busy: this.lockBusy,
+          message: this.lockMessage,
+          onUnlock: (): void => this.unlock()
+        })
       }
     }
     .width('100%')

@@ -23,6 +23,8 @@ import { CookiePersistence } from '../platform/CookiePersistence';
 import { Clipboard } from '../platform/Clipboard';
 import { WebFilePicker } from '../platform/WebFilePicker';
 import { KernelDownloader } from '../platform/KernelDownloader';
+import { BiometricAuth } from '../platform/BiometricAuth';
+import { LockOutcome, DEFAULT_LOCK_TIMEOUT_MIN, normalizeLockTimeout, shouldLock } from '../domain/LockPolicy';
 
 const WHITELIST_FILE = 'domain_whitelist.txt';
 
@@ -43,6 +45,7 @@ export class AppGraph {
   private static _settings: SettingsStore | undefined = undefined;
   private static _bookmarks: BookmarkService | undefined = undefined;
   /** 组合根持有 UIAbilityContext：platform 适配器要它（文件选择、下载目录） */
+  private static _biometric: BiometricAuth | undefined = undefined;
   private static _context: common.UIAbilityContext | undefined = undefined;
   /** 内核下载提示用的 notifier（UI 层装配时注入） */
   private static _notifier: CertReminderNotifier | undefined = undefined;
@@ -194,6 +197,54 @@ export class AppGraph {
       return;
     }
     KernelDownloader.install(ctx, AppGraph.domainWhitelist(), n);
+  }
+
+  // ---------- 指纹锁（UI 只经这里，不直连 platform，见 check-arch R3） ----------
+
+  private static biometric(): BiometricAuth {
+    if (AppGraph._biometric === undefined) {
+      AppGraph._biometric = new BiometricAuth();
+    }
+    return AppGraph._biometric;
+  }
+
+  /** 设备当前能否用指纹解锁（未录入/不支持/被锁定 → false，绝不假装可用） */
+  static biometricAvailable(): boolean {
+    return AppGraph.biometric().isAvailable();
+  }
+
+  static authenticateBiometric(title: string): Promise<LockOutcome> {
+    return AppGraph.biometric().authenticate(title);
+  }
+
+  /** 进入后台的那一刻记时间戳（EntryAbility.onBackground 调） */
+  static noteAppBackground(): void {
+    AppGraph.settings().setLockLastBackgroundAt(Date.now());
+  }
+
+  /** 回到前台是否必须解锁 */
+  static shouldLockNow(): boolean {
+    const s = AppGraph.settings();
+    if (!s.getLockEnabled()) {
+      return false;
+    }
+    if (!AppGraph.biometricAvailable()) {
+      // 指纹被关掉/删掉了：不能把用户锁在门外，直接放行（设置页会提示重新开启）
+      return false;
+    }
+    const stored = s.getLockTimeoutMinutes();
+    const timeout = stored < 0 ? DEFAULT_LOCK_TIMEOUT_MIN : normalizeLockTimeout(stored);
+    return shouldLock(s.getLockLastBackgroundAt(), timeout, Date.now());
+  }
+
+  /** 解锁成功：清掉后台时间戳，避免下一次前台又判成超时 */
+  static clearLockClock(): void {
+    AppGraph.settings().setLockLastBackgroundAt(0);
+  }
+
+  /** 冷启动是否上锁（进程被杀 = 会话终结，等价于「离开很久」） */
+  static shouldLockOnColdStart(): boolean {
+    return AppGraph.settings().getLockEnabled() && AppGraph.biometricAvailable();
   }
 
   /**

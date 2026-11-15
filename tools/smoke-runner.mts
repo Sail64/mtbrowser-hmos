@@ -12,6 +12,7 @@ import { DomainWhitelist } from './domain/DomainWhitelist.ts';
 import { LocalNetwork } from './domain/LocalNetwork.ts';
 import { shouldOpenInNewTab } from './domain/LinkOpenPolicy.ts';
 import { BlockedCards } from './domain/BlockedCards.ts';
+import { shouldLock, normalizeLockTimeout, lockTimeoutLabel, LOCK_TIMEOUT_OPTIONS, DEFAULT_LOCK_TIMEOUT_MIN } from './domain/LockPolicy.ts';
 import { InterceptAction, decideIntercept } from './domain/InterceptDecision.ts';
 import { fileNameFrom, sanitizeFileName, extensionForMime } from './domain/FileName.ts';
 import { suffixFilters } from './domain/AcceptTypes.ts';
@@ -467,6 +468,26 @@ ok(!bc.hasCard(4) && !bc.isUnloaded(4), 'cards: pageEnd clears both');
 bc.block(5, 'https://evil5.example/', true);
 bc.forget(5);
 ok(!bc.hasCard(5) && !bc.isUnloaded(5) && bc.cardUrlOf(5) === '', 'cards: forget clears both (close/evict)');
+
+
+// —— LockPolicy：自动锁定的时间语义 ——
+const MIN = 60000;
+const t0 = 1700000000000;
+ok(!shouldLock(0, 5, t0), 'lock: never backgrounded does not lock');
+ok(!shouldLock(t0, 5, t0 + 4 * MIN), 'lock: 4min < 5min stays unlocked');
+ok(shouldLock(t0, 5, t0 + 5 * MIN), 'lock: exactly at timeout locks');
+ok(shouldLock(t0, 5, t0 + 6 * MIN), 'lock: beyond timeout locks');
+ok(shouldLock(t0, 0, t0), 'lock: zero timeout locks immediately');
+ok(!shouldLock(t0, 15, t0 + 10 * MIN), 'lock: 15min setting tolerates 10min');
+ok(shouldLock(t0, 5, t0 - MIN), 'lock: clock moved backwards fails closed');
+ok(normalizeLockTimeout(-1) === DEFAULT_LOCK_TIMEOUT_MIN, 'lock: negative timeout falls back to default');
+ok(normalizeLockTimeout(7) === DEFAULT_LOCK_TIMEOUT_MIN, 'lock: unsupported timeout falls back');
+ok(normalizeLockTimeout(15) === 15, 'lock: supported timeout preserved');
+ok(normalizeLockTimeout(0) === 0, 'lock: immediate is a valid option');
+ok(LOCK_TIMEOUT_OPTIONS.length === 5, 'lock: five timeout options exposed');
+ok(lockTimeoutLabel(0) === '立即锁定', 'lock: label for immediate');
+ok(lockTimeoutLabel(5) === '5 分钟', 'lock: label for minutes');
+ok(lockTimeoutLabel(99) === '5 分钟', 'lock: label normalizes dirty value');
 
 console.log(`SMOKE RESULT: pass=${pass} fail=${fail}`);
 if (fail > 0) { process.exit(1); }

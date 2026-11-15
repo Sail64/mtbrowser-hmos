@@ -11,6 +11,10 @@ export class SettingsStore {
   /** 上次退出时打开的标签（JSON 字符串数组）+ 当前标签下标 */
   private static readonly KEY_OPEN_TABS = 'open_tabs';
   private static readonly KEY_OPEN_TABS_CURRENT = 'open_tabs_current';
+  /** 指纹锁：开关 / 后台停留多久后要求解锁（分钟）/ 最近一次进入后台的时间戳 */
+  private static readonly KEY_LOCK_ENABLED = 'lock_enabled';
+  private static readonly KEY_LOCK_TIMEOUT_MIN = 'lock_timeout_min';
+  private static readonly KEY_LOCK_LAST_BG = 'lock_last_bg_at';
 
   private db: preferences.Preferences;
 
@@ -79,6 +83,44 @@ export class SettingsStore {
     }
     const n = Number(raw);
     return Number.isFinite(n) && n >= 0 ? Math.trunc(n) : 0;
+  }
+
+  // ---------- 指纹锁 ----------
+
+  getLockEnabled(): boolean {
+    return PrefsDb.getString(this.db, SettingsStore.KEY_LOCK_ENABLED) === '1';
+  }
+
+  setLockEnabled(enabled: boolean): void {
+    PrefsDb.putString(this.db, SettingsStore.KEY_LOCK_ENABLED, enabled ? '1' : '0');
+  }
+
+  /** 未设置或脏数据 → 交给 domain/LockPolicy.normalizeLockTimeout 收敛 */
+  getLockTimeoutMinutes(): number {
+    const raw = PrefsDb.getString(this.db, SettingsStore.KEY_LOCK_TIMEOUT_MIN);
+    if (raw === '') {
+      return -1; // 用 -1 表示"没存过"，由调用方给默认值
+    }
+    const n = Number(raw);
+    return Number.isFinite(n) ? Math.trunc(n) : -1;
+  }
+
+  setLockTimeoutMinutes(minutes: number): void {
+    PrefsDb.putString(this.db, SettingsStore.KEY_LOCK_TIMEOUT_MIN, Math.trunc(minutes).toString());
+  }
+
+  /** 0 = 从未进过后台 */
+  getLockLastBackgroundAt(): number {
+    const raw = PrefsDb.getString(this.db, SettingsStore.KEY_LOCK_LAST_BG);
+    if (raw === '') {
+      return 0;
+    }
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
+  }
+
+  setLockLastBackgroundAt(at: number): void {
+    PrefsDb.putString(this.db, SettingsStore.KEY_LOCK_LAST_BG, Math.max(0, Math.trunc(at)).toString());
   }
 
   setOpenTabs(urls: string[], currentIndex: number): void {
