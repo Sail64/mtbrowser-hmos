@@ -23,6 +23,7 @@ import { CookiePersistence } from '../platform/CookiePersistence';
 import { Clipboard } from '../platform/Clipboard';
 import { WebFilePicker } from '../platform/WebFilePicker';
 import { KernelDownloader } from '../platform/KernelDownloader';
+import { WindowPrivacy } from '../platform/WindowPrivacy';
 import { BiometricAuth } from '../platform/BiometricAuth';
 import { LockOutcome, DEFAULT_LOCK_TIMEOUT_MIN, normalizeLockTimeout, shouldLock } from '../domain/LockPolicy';
 
@@ -217,6 +218,19 @@ export class AppGraph {
 
   static authenticateBiometric(title: string): Promise<LockOutcome> {
     return AppGraph.biometric().authenticate(title);
+  }
+
+  /**
+   * 窗口隐私模式（任务列表预览 / 截屏）。UI 与 Ability 都只走这一个口子，
+   * 避免两处各自拿 window 实例、互相覆盖。
+   */
+  static applyPrivacyMode(enabled: boolean): void {
+    WindowPrivacy.apply(AppGraph._context, enabled);
+  }
+
+  /** 启动时按设置下发一次 */
+  static applySavedPrivacyMode(): void {
+    AppGraph.applyPrivacyMode(AppGraph.settings().getHideRecents());
   }
 
   static setUiLocked(locked: boolean): void {

@@ -116,6 +116,7 @@ entry/src/main/ets/
 - **锁屏态吞掉返回键**（返回键不能成为绕过指纹的通道）；要离开应用请用系统 Home。
 - **锁屏期间不产生任何 mTLS 握手**：`InterceptAction.SUSPEND_FOR_LOCK` 在 domain 里，排在 scheme 与白名单之前（锁屏时连 `mailto:` 都不该拉起别的应用），只有 `about:blank` 放行。首次导航由 `tryLoadPending` 早退推迟，解锁时 `@Watch('onLockStateChanged')` 补发；被丢弃的 GET 跳转解锁后重放一次（POST 不重放，避免重复提交）。**教训**：只挡主框架不够——若不推迟首次导航，握手会发生在锁屏后面，客户端证书被挡掉 → 服务端 400（真机上就是这么炸的）。
 - **锁屏期间仍使用「已缓存、已授权」的客户端身份**：它不弹 UI、不泄露信息，却是 mTLS 站点后台轮询的命脉；把这条也挡掉会让所有 XHR 401、甚至掉登录。只有**需要弹选择器**的路径才被压制，并记下来解锁后自动重载一次。
+- **任务列表预览 / 截屏**：走窗口隐私模式 `setWindowPrivacyMode(true)`，需要 `ohos.permission.PRIVACY_WINDOW`（`normal` / `system_grant`，已声明并实测授予）。注意它是**整窗口常开**：最近任务的缩略图是系统在切换动画那一刻取的，`onBackground` 回来时图已生成，那时候再开只能挡下一次。代价是同窗口内用户也截不了图，所以做成设置项 `hide_recents`（默认开）。只能经 `AppGraph.applyPrivacyMode()` 下发，避免 UI 与 Ability 各拿一个 window 实例互相覆盖。
 - **启动页不用系统图标**：`startWindowIcon` 的显示尺寸由窗口管理器决定（只能换图、改不了它的框，实测比锁屏图标大很多且随机型变化）。所以 `media/startIcon.png` 换成 8×8 纯白，首帧由 `ui/SplashView` 自己画，**图标 80dp / 圆角 19 / 字体 17 Medium 与锁屏完全同源**；最短展示 500ms、兜底 1500ms、首屏 `onPageEnd` 即关。锁屏已经在盖着时不画启动页（避免叠加）。
 - **全局锁状态通道**：`Index.setLocked()` 是 `AppStorage['lock_state']` 的**唯一**写入口（页面用 `@StorageProp` 单向读取，写不回去），同时同步给 `AppGraph.setUiLocked()` 供 platform 层（下载）询问。锁屏期间：SSL 告警/证书选择器/文件选择器/下载全部不产生副作用；SSL 对话框的 `.then` 还要复核一次锁状态，防止「框在锁屏前打开、锁屏后被点」。
 - **返回链顺序**（`onBackPress`）：锁屏 → 设置页 → 全屏 → 拦截卡片 → 标签概览 → 主页覆盖层 → 网页后退 → 回主页。新增覆盖层必须同时接进这条链，否则返回键会穿透到底下的网页后退（设置页就漏过一次）。

@@ -19,6 +19,10 @@
       },
       {
         "name": "ohos.permission.ACCESS_BIOMETRIC"
+      },
+      {
+        // 窗口隐私模式：任务列表预览不显示页面内容（同时禁止截屏/录屏）
+        "name": "ohos.permission.PRIVACY_WINDOW"
       }
     ],
     "abilities": [

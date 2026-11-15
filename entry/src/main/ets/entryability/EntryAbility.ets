@@ -64,6 +64,8 @@ export default class EntryAbility extends UIAbility {
         return;
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      // 任务列表预览默认不显示页面内容（隐私模式需在窗口存在后下发）
+      AppGraph.applySavedPrivacyMode();
     });
   }
 

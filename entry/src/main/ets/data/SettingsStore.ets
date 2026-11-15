@@ -15,11 +15,25 @@ export class SettingsStore {
   private static readonly KEY_LOCK_ENABLED = 'lock_enabled';
   private static readonly KEY_LOCK_TIMEOUT_MIN = 'lock_timeout_min';
   private static readonly KEY_LOCK_LAST_BG = 'lock_last_bg_at';
+  /** 窗口隐私模式：任务列表里不显示页面内容（同时禁止截屏）。默认开，只有显式存 '0' 才关。 */
+  private static readonly KEY_HIDE_RECENTS = 'hide_recents';
 
   private db: preferences.Preferences;
 
   constructor(context: common.Context) {
     this.db = PrefsDb.of(context);
+  }
+
+  /**
+   * 任务列表预览是否隐藏（窗口隐私模式）。默认 true：
+   * 浏览器页面里可能是私密内容，默认不泄露，需要截图的人自己去设置里关。
+   */
+  getHideRecents(): boolean {
+    return PrefsDb.getString(this.db, SettingsStore.KEY_HIDE_RECENTS) !== '0';
+  }
+
+  setHideRecents(enabled: boolean): void {
+    PrefsDb.putString(this.db, SettingsStore.KEY_HIDE_RECENTS, enabled ? '1' : '0');
   }
 
   getLastUrl(): string {

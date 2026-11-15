@@ -14,6 +14,7 @@ export struct SettingsView {
   @State biometricOk: boolean = true;
   /** 回前台信号：去系统设置录完指纹回来，开关不该还是灰的 */
   @StorageLink('lock_fg_tick') @Watch('onForegroundAgain') fgTick: number = 0;
+  @State hideRecents: boolean = true;
   @State hint: string = '';
   onClose: () => void = (): void => {};
   /** 用户点了「立即锁定」：由页面真正上锁 */
@@ -26,6 +27,7 @@ export struct SettingsView {
     const min = stored < 0 ? DEFAULT_LOCK_TIMEOUT_MIN : normalizeLockTimeout(stored);
     this.timeoutText = String(min);
     this.biometricOk = AppGraph.biometricAvailable();
+    this.hideRecents = s.getHideRecents();
     if (!this.biometricOk) {
       this.hint = '本机未录入指纹（或指纹被系统锁定），无法启用指纹锁';
     } else if (this.lockEnabled) {
@@ -44,6 +46,12 @@ export struct SettingsView {
       this.biometricOk = ok;
       this.hint = ok ? '' : '本机未录入指纹（或指纹被系统锁定），无法启用指纹锁';
     }
+  }
+
+  private toggleHideRecents(on: boolean): void {
+    this.hideRecents = on;
+    AppGraph.settings().setHideRecents(on);
+    AppGraph.applyPrivacyMode(on);
   }
 
   private toggleLock(on: boolean): void {
@@ -194,6 +202,27 @@ export struct SettingsView {
         .width('100%')
         .padding({ left: 16, right: 16, top: 14, bottom: 14 })
       }
+
+      Divider().color('#EEEEEE')
+
+      Row() {
+        Column({ space: 3 }) {
+          Text('隐藏任务列表预览')
+            .fontSize(15)
+            .fontColor('#1F1F1F')
+          Text('最近任务里不显示页面内容（同窗口内也无法截屏）')
+            .fontSize(12)
+            .fontColor('#8A8F98')
+        }
+        .alignItems(HorizontalAlign.Start)
+        .layoutWeight(1)
+
+        Toggle({ type: ToggleType.Switch, isOn: this.hideRecents })
+          .selectedColor('#1F1F1F')
+          .onChange((on: boolean) => this.toggleHideRecents(on))
+      }
+      .width('100%')
+      .padding({ left: 16, right: 16, top: 14, bottom: 14 })
 
       if (this.hint !== '') {
         Text(this.hint)
