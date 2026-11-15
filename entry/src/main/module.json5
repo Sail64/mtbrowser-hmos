@@ -25,6 +25,8 @@
       {
         "name": "EntryAbility",
         "srcEntry": "./ets/entryability/EntryAbility.ets",
+        // 显式单实例：锁状态是进程级/页面级的，多实例会让"已解锁"状态串到别的窗口
+        "launchType": "singleton",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",

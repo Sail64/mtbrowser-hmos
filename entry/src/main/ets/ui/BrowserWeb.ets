@@ -18,6 +18,8 @@ const showingSslHosts: Set<string> = new Set();
 
 /** 400 证书清理冷却（Android CERT_CLEAR_COOLDOWN_MS）：防错误风暴下反复清缓存+刷新。 */
 const CERT_CLEAR_COOLDOWN_MS: number = 5000;
+/** SSL 告警对话框的最长存活时间：超过就按「取消」收场，避免 host 永久占位 */
+const SSL_DIALOG_TIMEOUT_MS: number = 60000;
 
 const DOMAIN = 0x0001;
 const TAG = 'BrowserWeb';
@@ -92,6 +94,11 @@ export struct BrowserWeb {
   private filePicking: boolean = false;
   /** 组件已销毁：250ms 定时器 / 120ms 重试链可能还在跑，必须能自己停手 */
   private gone: boolean = false;
+  /**
+   * 应用当前是否处于锁屏。锁屏期间禁止一切「需要用户决策」的弹框与自动证书授权：
+   * promptAction 的对话框是窗口级浮层，会盖在锁屏之上（等于按 UI 门面并不成立）。
+   */
+  @StorageLink('lock_state') uiLocked: boolean = false;
 
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
@@ -231,6 +238,11 @@ export struct BrowserWeb {
       event.handler.handleCancel();
       return;
     }
+    // 锁屏中：不弹任何框，直接拒绝（fail-closed）。用户在锁屏上不该有机会给站点授权。
+    if (this.uiLocked) {
+      event.handler.handleCancel();
+      return;
+    }
     // ASK_USER：同一 host 同时只弹一个框，其余直接取消
     if (showingSslHosts.has(host)) {
       event.handler.handleCancel();
@@ -238,6 +250,16 @@ export struct BrowserWeb {
     }
     showingSslHosts.add(host);
     this.sslHostsShown.add(host);
+    // 看门狗：对话框被系统收走/应用切后台时 showDialog 的 Promise 可能永不 settle，
+    // 那样这个 host 会永久占位（后续 ASK_USER 全被自动 cancel），页面也挂住不动。
+    const dialogWatchdog: number = setTimeout(() => {
+      showingSslHosts.delete(host);
+      try {
+        event.handler.handleCancel();
+      } catch (e) {
+        // handler 已失效
+      }
+    }, SSL_DIALOG_TIMEOUT_MS);
     this.getUIContext().getPromptAction().showDialog({
       title: 'SSL 证书警告',
       message: `${decision.reason}\n\n是否仍要继续访问 ${host}？\n（本次运行内不再询问该站点）`,
@@ -246,6 +268,7 @@ export struct BrowserWeb {
         { text: '仍要继续', color: '#D9534F' }
       ]
     }).then((res) => {
+      clearTimeout(dialogWatchdog);
       showingSslHosts.delete(host);
       if (res.index === 1) {
         policy.grantSessionExemption(host);
@@ -262,6 +285,7 @@ export struct BrowserWeb {
         }
       }
     }).catch(() => {
+      clearTimeout(dialogWatchdog);
       showingSslHosts.delete(host);
       try {
         event.handler.handleCancel();
@@ -278,6 +302,12 @@ export struct BrowserWeb {
     if (!AppGraph.domainWhitelist().allows(`https://${host}:${event.port}/`)) {
       hilog.warn(DOMAIN, TAG, 'client cert request from non-whitelisted host ignored: %{public}s', host);
       this.toast('非白名单站点请求客户端证书，已忽略');
+      event.handler.ignore();
+      return;
+    }
+    // 锁屏中：既不自动用缓存身份，也不拉起选择器。ignore() = 本次不带证书继续。
+    if (this.uiLocked) {
+      hilog.warn(DOMAIN, TAG, 'client cert request while locked, ignored: %{public}s', host);
       event.handler.ignore();
       return;
     }
@@ -501,6 +531,11 @@ export struct BrowserWeb {
       })
       .onShowFileSelector((event: OnShowFileSelectorEvent): boolean => {
         // 网页里的 <input type="file">（LibreChat 附件、Hermes 上传都走这里）
+        // 锁屏期间不拉起选择器：picker 是系统级界面，会盖在锁屏上；回空数组让内核放手
+        if (this.uiLocked) {
+          this.deliverFiles(event.result, []);
+          return true;
+        }
         if (this.filePicking) {
           // picker 已经开着：再点一次 input 不再拉起第二个，但也不能把内核晾着
           this.deliverFiles(event.result, []);

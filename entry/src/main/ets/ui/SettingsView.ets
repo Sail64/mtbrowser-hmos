@@ -12,6 +12,8 @@ export struct SettingsView {
   /** 输入框里的文本（用户可能正处于编辑中间态，例如空串） */
   @State timeoutText: string = String(DEFAULT_LOCK_TIMEOUT_MIN);
   @State biometricOk: boolean = true;
+  /** 回前台信号：去系统设置录完指纹回来，开关不该还是灰的 */
+  @StorageLink('lock_fg_tick') @Watch('onForegroundAgain') fgTick: number = 0;
   @State hint: string = '';
   onClose: () => void = (): void => {};
   /** 用户点了「立即锁定」：由页面真正上锁 */
@@ -28,6 +30,19 @@ export struct SettingsView {
       this.hint = '本机未录入指纹（或指纹被系统锁定），无法启用指纹锁';
     } else if (this.lockEnabled) {
       this.hint = '回到前台需要指纹解锁；填 0 表示一离开就锁';
+    }
+  }
+
+  aboutToDisappear(): void {
+    // 用户改完直接关页面（没有失焦事件）也要落盘
+    this.settleTimeout();
+  }
+
+  private onForegroundAgain(): void {
+    const ok = AppGraph.biometricAvailable();
+    if (ok !== this.biometricOk) {
+      this.biometricOk = ok;
+      this.hint = ok ? '' : '本机未录入指纹（或指纹被系统锁定），无法启用指纹锁';
     }
   }
 
@@ -69,14 +84,24 @@ export struct SettingsView {
         digits = digits + ch;
       }
     }
-    this.timeoutText = digits;
-    if (digits !== '') {
-      AppGraph.settings().setLockTimeoutMinutes(normalizeLockTimeout(Number(digits)));
+    if (digits === '') {
+      // 编辑中间态：只更新显示，不落盘（空串不该覆盖已存的值）
+      this.timeoutText = '';
+      return;
     }
+    const normalized = normalizeLockTimeout(Number(digits));
+    // 超过上限立刻把框里的数字纠正过来，否则「显示 9999、实际 1440」界面在撒谎
+    this.timeoutText = String(normalized);
+    // 不在这里落盘：逐键写会把「想输 10」的中间态 "1" 存成 1 分钟
+
   }
 
   /** 失焦/提交时把文本回写成合法值（空串 → 回到已存的值） */
   private settleTimeout(): void {
+    const typed = this.timeoutText.trim();
+    if (typed !== '') {
+      AppGraph.settings().setLockTimeoutMinutes(normalizeLockTimeout(Number(typed)));
+    }
     const stored = AppGraph.settings().getLockTimeoutMinutes();
     const min = stored < 0 ? DEFAULT_LOCK_TIMEOUT_MIN : normalizeLockTimeout(stored);
     this.timeoutText = String(min);

@@ -82,6 +82,16 @@ struct Index {
   /** 统一 toast 出口（与 BrowserWeb 用同一个实现，避免两套提示风格） */
   private notifier: CertReminderNotifier | null = null;
 
+  /**
+   * 统一的锁状态写入口：同时把状态共享给 BrowserWeb。
+   * 锁屏期间必须禁止一切系统级弹框（SSL 告警、文件选择、客户端证书选择），
+   * 否则它们会浮在锁屏之上，等于在未解锁状态下给站点发授权。
+   */
+  private setLocked(value: boolean): void {
+    this.locked = value;
+    AppStorage.setOrCreate<boolean>('lock_state', value);
+  }
+
   /** 回到前台：按「离开时长 + 设置」决定是否上锁 */
   private onForegroundTick(): void {
     if (this.locked) {
@@ -89,7 +99,7 @@ struct Index {
     }
     if (AppGraph.shouldLockNow()) {
       this.lockMessage = '';
-      this.locked = true;
+      this.setLocked(true);
     }
   }
 
@@ -102,7 +112,7 @@ struct Index {
     AppGraph.authenticateBiometric('解锁 MT浏览器').then((outcome: LockOutcome) => {
       this.lockBusy = false;
       if (outcome === LockOutcome.SUCCESS) {
-        this.locked = false;
+        this.setLocked(false);
         this.lockMessage = '';
         AppGraph.clearLockClock();
         return;
@@ -130,7 +140,11 @@ struct Index {
     // 内核下载委托全局注册一次（下载走内核栈才继承 mTLS/证书豁免）
     AppGraph.installDownloader(this.notifier);
     // 冷启动（进程被杀过）等价于「离开很久」：开了指纹锁就必须先解锁再看内容
-    this.locked = AppGraph.shouldLockOnColdStart();
+    this.setLocked(AppGraph.shouldLockOnColdStart());
+    if (AppGraph.settings().getLockEnabled() && !AppGraph.biometricAvailable()) {
+      // 开着锁但指纹不可用：本次不锁，但必须说出来——静默失效比不锁更糟
+      this.notifier?.show('指纹不可用，本次未锁定');
+    }
     // 恢复上次的会话：把所有还开着的标签一起恢复，而不是退回单一首页
     // （用户抱怨过"冷启动总是跳回固定站点"）。
     const savedTabs = AppGraph.settings().getOpenTabs();
@@ -898,9 +912,15 @@ struct Index {
             this.settingsVisible = false;
           },
           onLockNow: (): void => {
+            // 指纹此刻不可用就别锁：否则用户把自己关进一个解不开的锁屏，
+            // 唯一出路是杀进程（靠冷启动 fail-open 逃出来）。
+            if (!AppGraph.biometricAvailable()) {
+              this.notifier?.show('指纹不可用，无法立即锁定');
+              return;
+            }
             this.settingsVisible = false;
             this.lockMessage = '';
-            this.locked = true;
+            this.setLocked(true);
           }
         })
       }

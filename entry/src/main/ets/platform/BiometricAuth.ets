@@ -1,4 +1,5 @@
 import { userAuth } from '@kit.UserAuthenticationKit';
+import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { LockOutcome } from '../domain/LockPolicy';
 
@@ -12,6 +13,8 @@ const TAG = 'Biometric';
  * 所以必须有上限：到点就按 TIMEOUT 收敛。
  */
 const AUTH_TIMEOUT_MS: number = 60000;
+/** challenge 长度（字节） */
+const CHALLENGE_LEN: number = 32;
 
 /**
  * 指纹认证（平台层）。只做一件事：把 system 的 userAuth 包成「一次调用一个结果」。
@@ -25,6 +28,24 @@ const AUTH_TIMEOUT_MS: number = 60000;
  *   （悬着 = 锁屏永远解不开）。
  */
 export class BiometricAuth {
+  /**
+   * 每次认证一个新的随机 challenge。
+   * 现在没有任何地方校验 token（本地 UI 门，无服务端、无密钥派生），所以这不是"缺陷修复"；
+   * 但常量 challenge 意味着一旦将来用解锁结果授权敏感动作，就是可重放的空校验。
+   * 成本近乎为零，先做对。
+   */
+  private makeChallenge(): Uint8Array {
+    try {
+      const blob: cryptoFramework.DataBlob =
+        cryptoFramework.createRandom().generateRandomSync(CHALLENGE_LEN);
+      return blob.data;
+    } catch (e) {
+      // 随机源不可用也不能让解锁失败：退回固定值，但记日志
+      hilog.error(DOMAIN, TAG, 'random challenge failed: %{public}s', JSON.stringify(e));
+      return new Uint8Array([0]);
+    }
+  }
+
   /** 设备是否**现在就能**用指纹（已录入、未被锁定、硬件支持） */
   isAvailable(): boolean {
     try {
@@ -53,7 +74,7 @@ export class BiometricAuth {
       }, AUTH_TIMEOUT_MS);
       try {
         const authParam: userAuth.AuthParam = {
-          challenge: new Uint8Array([0]),
+          challenge: this.makeChallenge(),
           // 只认指纹：人脸在本应用里没有需求，少一种认证就少一条判断路径
           authType: [userAuth.UserAuthType.FINGERPRINT],
           authTrustLevel: userAuth.AuthTrustLevel.ATL2,
