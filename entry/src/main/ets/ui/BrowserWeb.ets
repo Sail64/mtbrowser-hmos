@@ -98,7 +98,7 @@ export struct BrowserWeb {
    * 应用当前是否处于锁屏。锁屏期间禁止一切「需要用户决策」的弹框与自动证书授权：
    * promptAction 的对话框是窗口级浮层，会盖在锁屏之上（等于按 UI 门面并不成立）。
    */
-  @StorageLink('lock_state') uiLocked: boolean = false;
+  @StorageLink('lock_state') @Watch('onLockStateChanged') uiLocked: boolean = false;
 
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
@@ -123,6 +123,12 @@ export struct BrowserWeb {
    */
   private tryLoadPending(attempt: number): void {
     if (this.gone || this.initialLoadStarted || !this.active) {
+      return;
+    }
+    // 锁屏中不发起首次导航：mTLS 握手若在未解锁时发生，客户端证书会被上面的闸门
+    // ignore 掉，服务端直接 400，而这张 400 页面解锁后不会自己重来。
+    // 解锁时由 onLockStateChanged 补上。
+    if (this.uiLocked) {
       return;
     }
     if (this.pendingUrl === '' || this.pendingUrl === 'about:blank') {
@@ -161,6 +167,22 @@ export struct BrowserWeb {
       }
       this.tryLoadPending(0);
     }, 250);
+  }
+
+  /**
+   * 解锁了：把锁屏期间被推迟的首次导航补上。
+   * 必须等一拍：解锁同一帧里 loadUrl 会被内核掐掉（与切标签同因）。
+   */
+  private onLockStateChanged(): void {
+    if (this.uiLocked) {
+      return;
+    }
+    setTimeout(() => {
+      if (this.gone) {
+        return;
+      }
+      this.tryLoadPending(0);
+    }, 200);
   }
 
   private toast(message: string): void {
@@ -469,6 +491,11 @@ export struct BrowserWeb {
           url: url,
           currentUrl: current
         };
+        // 锁屏期间一律不发起/不接受主框架导航（页面脚本跳转、302、meta refresh 同样）。
+        // about:blank 放行：它是本应用自己的空白文档（新标签首帧、拦截后卸载文档）。
+        if (this.uiLocked && data.isMainFrame() && url !== 'about:blank') {
+          return true;
+        }
         const nav = AppGraph.navigationPolicy().decide(url, current);
         const action = decideIntercept(nav, AppGraph.domainWhitelist().allows(url), facts);
         switch (action) {
