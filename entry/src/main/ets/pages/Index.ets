@@ -90,6 +90,8 @@ struct Index {
   private setLocked(value: boolean): void {
     this.locked = value;
     AppStorage.setOrCreate<boolean>('lock_state', value);
+    // 副作用闸门（下载等）走 AppGraph，不让 platform 直读 AppStorage
+    AppGraph.setUiLocked(value);
   }
 
   /** 回到前台：按「离开时长 + 设置」决定是否上锁 */
@@ -140,7 +142,8 @@ struct Index {
     // 内核下载委托全局注册一次（下载走内核栈才继承 mTLS/证书豁免）
     AppGraph.installDownloader(this.notifier);
     // 冷启动（进程被杀过）等价于「离开很久」：开了指纹锁就必须先解锁再看内容
-    this.setLocked(AppGraph.shouldLockOnColdStart());
+    // 已经锁上的会话不能因为「此刻指纹不可用」被算成未锁（页面重建/窗口重建时会发生）
+    this.setLocked(this.locked || AppGraph.shouldLockOnColdStart());
     if (AppGraph.settings().getLockEnabled() && !AppGraph.biometricAvailable()) {
       // 开着锁但指纹不可用：本次不锁，但必须说出来——静默失效比不锁更糟
       this.notifier?.show('指纹不可用，本次未锁定');

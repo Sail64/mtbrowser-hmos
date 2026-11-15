@@ -46,6 +46,8 @@ export class AppGraph {
   private static _bookmarks: BookmarkService | undefined = undefined;
   /** 组合根持有 UIAbilityContext：platform 适配器要它（文件选择、下载目录） */
   private static _biometric: BiometricAuth | undefined = undefined;
+  /** 应用当前是否锁屏（由 Index 的 setLocked 写入）。用于挡住锁屏期间的副作用。 */
+  private static _uiLocked: boolean = false;
   private static _context: common.UIAbilityContext | undefined = undefined;
   /** 内核下载提示用的 notifier（UI 层装配时注入） */
   private static _notifier: CertReminderNotifier | undefined = undefined;
@@ -196,7 +198,7 @@ export class AppGraph {
     if (ctx === undefined || n === undefined) {
       return;
     }
-    KernelDownloader.install(ctx, AppGraph.domainWhitelist(), n);
+    KernelDownloader.install(ctx, AppGraph.domainWhitelist(), n, (): boolean => AppGraph.isLocked());
   }
 
   // ---------- 指纹锁（UI 只经这里，不直连 platform，见 check-arch R3） ----------
@@ -215,6 +217,15 @@ export class AppGraph {
 
   static authenticateBiometric(title: string): Promise<LockOutcome> {
     return AppGraph.biometric().authenticate(title);
+  }
+
+  static setUiLocked(locked: boolean): void {
+    AppGraph._uiLocked = locked;
+  }
+
+  /** 锁屏中：下载、证书重置这类有副作用的行为都要先问这里 */
+  static isLocked(): boolean {
+    return AppGraph._uiLocked;
   }
 
   /** 进入后台的那一刻记时间戳（EntryAbility.onBackground 调） */

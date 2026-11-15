@@ -16,7 +16,9 @@ export enum InterceptAction {
   /** 危险 scheme，不外抛也不加载 */
   BLOCK_SCHEME = 3,
   /** 主框架目标不在白名单，发起时拦截 */
-  BLOCK_WHITELIST = 4
+  BLOCK_WHITELIST = 4,
+  /** 应用处于锁屏：主框架导航一律挂起（不发起、不握手），解锁后由页面重放 */
+  SUSPEND_FOR_LOCK = 5
 }
 
 /**
@@ -31,8 +33,15 @@ export enum InterceptAction {
 export function decideIntercept(
   nav: NavigationDecision,
   whitelistAllows: boolean,
-  facts: LinkNavFacts
+  facts: LinkNavFacts,
+  locked: boolean = false
 ): InterceptAction {
+  // 锁屏优先于一切：未解锁时连「外抛 scheme」和「白名单判定」都不该发生
+  // （否则页面里一个 mailto: 就能在锁屏后面拉起别的应用）。
+  // about:blank 例外：它是本应用自己的空白文档，拦截后卸载恶意页要用它。
+  if (locked && facts.isMainFrame && facts.url !== 'about:blank') {
+    return InterceptAction.SUSPEND_FOR_LOCK;
+  }
   if (nav === NavigationDecision.OPEN_EXTERNAL) {
     return InterceptAction.OPEN_EXTERNAL;
   }

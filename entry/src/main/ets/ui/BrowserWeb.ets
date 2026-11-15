@@ -98,7 +98,16 @@ export struct BrowserWeb {
    * 应用当前是否处于锁屏。锁屏期间禁止一切「需要用户决策」的弹框与自动证书授权：
    * promptAction 的对话框是窗口级浮层，会盖在锁屏之上（等于按 UI 门面并不成立）。
    */
-  @StorageLink('lock_state') @Watch('onLockStateChanged') uiLocked: boolean = false;
+  // 单向：只有 Index 能改锁状态（双向绑定意味着这里一行赋值就能解除全应用锁）
+  @StorageProp('lock_state') @Watch('onLockStateChanged') uiLocked: boolean = false;
+  /** 锁屏期间有需要选证书的请求被压掉：解锁后要重载一次 */
+  private certSuppressed: boolean = false;
+  /** 锁屏期间被丢弃的主框架导航（GET 才可安全重放） */
+  private suspendedUrl: string = '';
+  /** 锁屏期间发生的「400 清绑定 + refresh」延后到解锁执行 */
+  private pendingCertResetHost: string = '';
+  /** 首次导航的统一调度定时器：避免 250ms 与 200ms 两条链各起一条重试 */
+  private pendingLoadTimer: number = -1;
 
   aboutToAppear(): void {
     this.notifier = new ToastNotifier(this.getUIContext().getPromptAction());
@@ -161,28 +170,50 @@ export struct BrowserWeb {
     if (!this.active) {
       return;
     }
-    setTimeout(() => {
-      if (this.gone) {
-        return;
-      }
-      this.tryLoadPending(0);
-    }, 250);
+    this.schedulePendingLoad(250);
   }
 
   /**
    * 解锁了：把锁屏期间被推迟的首次导航补上。
    * 必须等一拍：解锁同一帧里 loadUrl 会被内核掐掉（与切标签同因）。
    */
-  private onLockStateChanged(): void {
-    if (this.uiLocked) {
-      return;
+  /** 首次导航的唯一调度入口（先撤销上一次排期，再排新的一次） */
+  private schedulePendingLoad(delayMs: number): void {
+    if (this.pendingLoadTimer !== -1) {
+      clearTimeout(this.pendingLoadTimer);
     }
-    setTimeout(() => {
+    this.pendingLoadTimer = setTimeout(() => {
+      this.pendingLoadTimer = -1;
       if (this.gone) {
         return;
       }
       this.tryLoadPending(0);
-    }, 200);
+    }, delayMs);
+  }
+
+  private onLockStateChanged(): void {
+    if (this.uiLocked) {
+      return;
+    }
+    // 解锁后按顺序补三件事：
+    // 1) 被压掉的证书选择 / 被丢弃的跳转 → 重载一次当前页（握手会带证书）
+    // 2) 被延后的「400 清绑定 + refresh」
+    // 3) 被推迟的首次导航
+    if (this.certSuppressed || this.suspendedUrl !== '') {
+      this.certSuppressed = false;
+      this.suspendedUrl = '';
+      try {
+        this.controller.refresh();
+      } catch (e) {
+        // 页面尚未就绪：交给下面的首次导航
+      }
+    }
+    if (this.pendingCertResetHost !== '') {
+      const host = this.pendingCertResetHost;
+      this.pendingCertResetHost = '';
+      this.resetClientCert(host, true);
+    }
+    this.schedulePendingLoad(200);
   }
 
   private toast(message: string): void {
@@ -274,7 +305,9 @@ export struct BrowserWeb {
     this.sslHostsShown.add(host);
     // 看门狗：对话框被系统收走/应用切后台时 showDialog 的 Promise 可能永不 settle，
     // 那样这个 host 会永久占位（后续 ASK_USER 全被自动 cancel），页面也挂住不动。
+    let revoked: boolean = false;
     const dialogWatchdog: number = setTimeout(() => {
+      revoked = true;
       showingSslHosts.delete(host);
       try {
         event.handler.handleCancel();
@@ -292,6 +325,15 @@ export struct BrowserWeb {
     }).then((res) => {
       clearTimeout(dialogWatchdog);
       showingSslHosts.delete(host);
+      // 看门狗已撤销 / 此刻已锁屏：绝不能再授予会话豁免（否则解锁后该站静默免检）
+      if (revoked || this.uiLocked) {
+        try {
+          event.handler.handleCancel();
+        } catch (e) {
+          // handler 已失效
+        }
+        return;
+      }
       if (res.index === 1) {
         policy.grantSessionExemption(host);
         try {
@@ -327,16 +369,14 @@ export struct BrowserWeb {
       event.handler.ignore();
       return;
     }
-    // 锁屏中：既不自动用缓存身份，也不拉起选择器。ignore() = 本次不带证书继续。
-    if (this.uiLocked) {
-      hilog.warn(DOMAIN, TAG, 'client cert request while locked, ignored: %{public}s', host);
-      event.handler.ignore();
-      return;
-    }
     const selector = AppGraph.clientCertSelector();
     const cached = selector.cachedIdentity(host);
     if (cached !== null) {
       try {
+        // 锁屏期间也照常使用**已缓存、已由用户授权过**的身份：
+        // 它不弹任何 UI、不向用户泄露信息，却是 mTLS 站点后台轮询的命脉。
+        // 若在这里 ignore()，锁屏期间所有 XHR/iframe 握手都会失败 → 401 风暴、甚至掉登录，
+        // 这正是「冷启动首屏 400」的同一类错误，只是换成了子资源。
         event.handler.confirm(cached);
         this.mtlsHosts.add(host);
         return;
@@ -345,7 +385,20 @@ export struct BrowserWeb {
         selector.clearIdentity(host);
       }
     }
+    if (this.uiLocked) {
+      // 需要用户选证书，但锁屏期间不能弹窗：本次不带证书继续，并记下解锁后需要重载
+      hilog.warn(DOMAIN, TAG, 'client cert picker suppressed while locked: %{public}s', host);
+      this.certSuppressed = true;
+      event.handler.ignore();
+      return;
+    }
     selector.chooseIdentity(host, event.port, (identity: string | null): void => {
+      // 选择器在锁屏之前打开、锁屏后才回调：此刻绝不能把身份发出去
+      if (this.uiLocked) {
+        hilog.warn(DOMAIN, TAG, 'client cert picker returned while locked, ignored');
+        event.handler.ignore();
+        return;
+      }
       if (identity !== null) {
         try {
           event.handler.confirm(identity);
@@ -389,12 +442,25 @@ export struct BrowserWeb {
       hilog.warn(DOMAIN, TAG, 'main-frame 400 on %{public}s without prior mTLS handshake; keep binding', host);
       return;
     }
+    // 锁屏期间不做「销毁绑定 + refresh」：refresh 会被导航闸门丢掉，
+    // 结果是绑定没了、页面还是 400，用户解锁后还得手动重选证书。
+    if (this.uiLocked) {
+      this.pendingCertResetHost = host;
+      hilog.warn(DOMAIN, TAG, 'defer cert reset until unlocked: %{public}s', host);
+      return;
+    }
+    this.resetClientCert(host, true);
+  }
+
+  /** 清掉该 host 的证书绑定并（可选）刷新页面；调用方负责排除锁屏期 */
+  private resetClientCert(host: string, refresh: boolean): void {
     const now = Date.now();
     const last = this.certClearAt.get(host);
     if (last !== undefined && now - last < CERT_CLEAR_COOLDOWN_MS) {
       return; // 冷却期内不再清+刷新，避免错误风暴
     }
     this.certClearAt.set(host, now);
+    const selector = AppGraph.clientCertSelector();
     selector.clearIdentity(host);
     // 同时清内核侧客户端证书缓存，否则 refresh 可能仍复用旧证书 → 400 循环
     if (this.certCacheClearOk) {
@@ -409,6 +475,9 @@ export struct BrowserWeb {
     this.toast(this.certCacheClearOk
       ? '客户端证书已失效，请重新选择'
       : '已重置证书选择；内核缓存未能清除，可能需重启应用');
+    if (!refresh) {
+      return;
+    }
     try {
       this.controller.refresh();
     } catch (e) {
@@ -491,13 +560,8 @@ export struct BrowserWeb {
           url: url,
           currentUrl: current
         };
-        // 锁屏期间一律不发起/不接受主框架导航（页面脚本跳转、302、meta refresh 同样）。
-        // about:blank 放行：它是本应用自己的空白文档（新标签首帧、拦截后卸载文档）。
-        if (this.uiLocked && data.isMainFrame() && url !== 'about:blank') {
-          return true;
-        }
         const nav = AppGraph.navigationPolicy().decide(url, current);
-        const action = decideIntercept(nav, AppGraph.domainWhitelist().allows(url), facts);
+        const action = decideIntercept(nav, AppGraph.domainWhitelist().allows(url), facts, this.uiLocked);
         switch (action) {
           case InterceptAction.OPEN_EXTERNAL:
             this.openExternal(url);
@@ -510,6 +574,12 @@ export struct BrowserWeb {
             // 发起时拦截：页面没动，交给上层只弹卡片（地址栏保持当前页，不改写）
             this.onBlocked(this.tabId, url, false);
             this.toast('域名不在白名单，已拦截');
+            return true;
+          case InterceptAction.SUSPEND_FOR_LOCK:
+            // GET 才可安全重放（POST 重放等于重复提交，只丢弃）
+            if (facts.method.toUpperCase() === 'GET') {
+              this.suspendedUrl = url;
+            }
             return true;
           case InterceptAction.NEW_TAB:
             this.onOpenInNewTab(url);

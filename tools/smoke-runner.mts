@@ -491,5 +491,18 @@ ok(lockTimeoutLabel(0) === '立即锁定', 'lock: label for immediate');
 ok(lockTimeoutLabel(5) === '5 分钟', 'lock: label for minutes');
 ok(lockTimeoutLabel(99) === '99 分钟', 'lock: label keeps user value');
 
+
+// —— 锁屏闸门（第 5 种结果）：顺序必须压过 scheme 与白名单 ——
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, true, linkFacts, true) === InterceptAction.SUSPEND_FOR_LOCK,
+  'intercept: locked main-frame navigation is suspended');
+ok(decideIntercept(NavigationDecision.OPEN_EXTERNAL, true, { ...linkFacts, url: 'mailto:a@example.org' }, true) === InterceptAction.SUSPEND_FOR_LOCK,
+  'intercept: locked also blocks external scheme (no app launch behind lock)');
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, true, { ...linkFacts, url: 'about:blank' }, true) === InterceptAction.LOAD,
+  'intercept: about:blank still allowed while locked');
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, true, { ...linkFacts, isMainFrame: false }, true) === InterceptAction.LOAD,
+  'intercept: subframe not suspended by lock (guard is main-frame only)');
+ok(decideIntercept(NavigationDecision.OPEN_IN_APP, true, linkFacts, false) === InterceptAction.NEW_TAB,
+  'intercept: unlocked behaviour unchanged');
+
 console.log(`SMOKE RESULT: pass=${pass} fail=${fail}`);
 if (fail > 0) { process.exit(1); }

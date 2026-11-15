@@ -33,7 +33,7 @@ export class KernelDownloader {
    * 所以调用点放在 BrowserWeb 的 onControllerAttached 里，而不是页面 aboutToAppear。
    */
   static install(context: common.UIAbilityContext, whitelist: DomainWhitelist,
-    notifier: CertReminderNotifier): void {
+    notifier: CertReminderNotifier, isLocked: () => boolean): void {
     if (KernelDownloader.installed) {
       return;
     }
@@ -49,6 +49,13 @@ export class KernelDownloader {
     const delegate = new webview.WebDownloadDelegate();
 
     delegate.onBeforeDownload((item: webview.WebDownloadItem): void => {
+      // 锁屏期间不允许任何下载落地，也不弹 toast（toast 是窗口级浮层，会浮在锁屏上，
+      // 把文件名/失败原因泄露给拿着手机的人）
+      if (isLocked()) {
+        hilog.warn(DOMAIN, TAG, 'download blocked while locked');
+        item.cancel();
+        return;
+      }
       const url = item.getUrl();
       // 子框架/子资源不受白名单约束（已知边界），所以下载必须自己再过一道：
       // 否则白名单页里嵌的第三方 iframe 就能静默往应用目录写文件。
