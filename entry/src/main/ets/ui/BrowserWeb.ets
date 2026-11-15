@@ -499,6 +499,11 @@ export struct BrowserWeb {
       // 而是走同一条主框架导航，交给上面的 onLoadIntercept 决定是否裂标签。
       // 不写这一行等于把行为交给默认值——默认值在两个方向上都不安全。
       .multiWindowAccess(false)
+      // 关掉 ArkWeb 的 AVSession 集成：页面一播放音视频，系统播控/通知栏就会挂出一张
+      // 媒体卡，卡上带**页面标题**（未解锁的人下拉通知栏就能看到你在看什么），
+      // 卡上的播放/暂停/切歌也能被未解锁的人操作——等于隔着锁能操作页面里的媒体。
+      // 代价：失去系统级播控（声音照旧，但没法从通知栏暂停/切歌）。见 docs/ARCHITECTURE.md
+      .enableWebAVSession(false)
       // ArkWeb 默认 false。SPA（Hermes WebUI）此时 localStorage === null，
       // 首屏后的 JS 直接抛 TypeError，页面渲染正常但全部交互失效。
       .domStorageAccess(true)
