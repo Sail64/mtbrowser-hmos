@@ -28,7 +28,8 @@ export struct LockScreen {
           .fontColor('#1F1F1F')
           .margin({ top: 20 })
 
-        Text('MT浏览器已锁定')
+        // 只留一行小字：验证中换成状态，其余时候就是「轻触解锁」
+        Text(this.busy ? '正在验证指纹…' : '轻触解锁')
           .fontSize(13)
           .fontColor('#9AA0A6')
           .margin({ top: 8 })
@@ -45,14 +46,6 @@ export struct LockScreen {
       .alignItems(HorizontalAlign.Center)
 
       Blank()
-
-      // 底部一行提示替掉原来的大按钮：位置在拇指自然落下处，但整屏任意位置都可点
-      Text(this.busy ? '正在验证指纹…' : '轻触屏幕任意位置验证指纹')
-        .fontSize(12)
-        .fontColor(this.busy ? '#6B7280' : '#B0B4BA')
-        .width('100%')
-        .textAlign(TextAlign.Center)
-        .margin({ bottom: 52 })
     }
     .width('100%')
     .height('100%')
