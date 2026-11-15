@@ -6,6 +6,14 @@ const DOMAIN = 0x0001;
 const TAG = 'Biometric';
 
 /**
+ * 认证看门狗。`on('result')` 在某些情况下不会回调（系统弹框被其它窗口顶掉、
+ * 认证进程卡死、切后台时框被系统收回……），而锁屏的解除完全依赖这个 Promise。
+ * Promise 悬着 ⇒ lockBusy 永远为 true ⇒ 锁屏永远解不开（没有密码兜底，等于把用户锁死）。
+ * 所以必须有上限：到点就按 TIMEOUT 收敛。
+ */
+const AUTH_TIMEOUT_MS: number = 60000;
+
+/**
  * 指纹认证（平台层）。只做一件事：把 system 的 userAuth 包成「一次调用一个结果」。
  *
  * 关键约束（踩坑点）：
@@ -39,6 +47,10 @@ export class BiometricAuth {
         settled = true;
         resolve(outcome);
       };
+      const watchdog: number = setTimeout(() => {
+        hilog.error(DOMAIN, TAG, 'auth watchdog fired after %{public}d ms', AUTH_TIMEOUT_MS);
+        finish(LockOutcome.TIMEOUT);
+      }, AUTH_TIMEOUT_MS);
       try {
         const authParam: userAuth.AuthParam = {
           challenge: new Uint8Array([0]),
@@ -55,6 +67,7 @@ export class BiometricAuth {
         const instance: userAuth.UserAuthInstance = userAuth.getUserAuthInstance(authParam, widgetParam);
         instance.on('result', {
           onResult: (result: userAuth.UserAuthResult): void => {
+            clearTimeout(watchdog);
             if (result.result === userAuth.UserAuthResultCode.SUCCESS) {
               finish(LockOutcome.SUCCESS);
             } else if (result.result === userAuth.UserAuthResultCode.CANCELED) {
@@ -67,6 +80,7 @@ export class BiometricAuth {
         });
         instance.start();
       } catch (e) {
+        clearTimeout(watchdog);
         hilog.error(DOMAIN, TAG, 'authenticate threw: %{public}s', JSON.stringify(e));
         finish(LockOutcome.UNAVAILABLE);
       }

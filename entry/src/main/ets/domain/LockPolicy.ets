@@ -11,7 +11,9 @@ export enum LockOutcome {
   SUCCESS = 0,
   CANCELED = 1,
   FAILED = 2,
-  UNAVAILABLE = 3
+  UNAVAILABLE = 3,
+  /** 认证没有任何回调（系统框被外部打断/进程卡住）：必须收敛成结果，否则锁屏永远解不开 */
+  TIMEOUT = 4
 }
 
 /** 允许用户手填的范围（分钟）：0 = 立即锁定，上限一天 */

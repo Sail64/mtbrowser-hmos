@@ -115,7 +115,9 @@ export struct SettingsView {
 
         Toggle({ type: ToggleType.Switch, isOn: this.lockEnabled })
           .selectedColor('#1F1F1F')
-          .enabled(this.biometricOk)
+          // 指纹不可用时也不许把开关锁死：已经开着的用户必须能关掉，
+          // 否则「指纹被删了 + 开关动不了」= 设置被自己的配置卡住。
+          .enabled(this.biometricOk || this.lockEnabled)
           .onChange((on: boolean) => this.toggleLock(on))
       }
       .width('100%')

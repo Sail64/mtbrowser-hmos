@@ -112,9 +112,13 @@ struct Index {
         this.lockMessage = '';
         return;
       }
-      this.lockMessage = outcome === LockOutcome.UNAVAILABLE
-        ? '指纹不可用，请先在系统设置中录入指纹'
-        : '指纹不匹配，请重试';
+      if (outcome === LockOutcome.UNAVAILABLE) {
+        this.lockMessage = '指纹不可用，请先在系统设置中录入指纹';
+      } else if (outcome === LockOutcome.TIMEOUT) {
+        this.lockMessage = '认证超时，请重试';
+      } else {
+        this.lockMessage = '指纹不匹配，请重试';
+      }
     }).catch(() => {
       this.lockBusy = false;
       this.lockMessage = '认证失败，请重试';
