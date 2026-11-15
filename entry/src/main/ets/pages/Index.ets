@@ -699,7 +699,13 @@ struct Index {
     if (this.locked) {
       return true;
     }
-    // 返回次序与 Android 一致：退出全屏 → 关标签概览 → 关主页覆盖层 → 网页后退 → 回主页
+    // 覆盖层优先于网页后退：设置页在最上层，返回键必须先关它，
+    // 否则会把下面的网页退一页（用户看到的是「设置关不掉，网页反而退回上一页」）。
+    if (this.settingsVisible) {
+      this.settingsVisible = false;
+      return true;
+    }
+    // 返回次序：设置页 → 退出全屏 → 拦截卡片 → 关标签概览 → 关主页覆盖层 → 网页后退 → 回主页
     if (this.fullscreen) {
       this.fullscreen = false;
       return true;
