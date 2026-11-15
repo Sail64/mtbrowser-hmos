@@ -14,10 +14,16 @@ import { SiteEditorDialog } from '../ui/SiteEditorDialog';
 import { ToastNotifier } from '../ui/ToastNotifier';
 import { FullscreenFab } from '../ui/FullscreenFab';
 import { LockScreen } from '../ui/LockScreen';
+import { SplashView } from '../ui/SplashView';
 import { SettingsView } from '../ui/SettingsView';
 import { LockOutcome } from '../domain/LockPolicy';
 
 /** 首次导航重试：6 次 × 120ms ≈ 720ms 内 Web 仍未 attach 才判失败 */
+/** 应用内启动页最短展示时间（避免一帧闪过的尴尬） */
+const SPLASH_MIN_MS: number = 500;
+/** 启动页兜底关闭时间：页面迟迟没加载完也不能一直挡着 */
+const SPLASH_MAX_MS: number = 1500;
+
 const OPEN_RETRY_LEFT: number = 6;
 const OPEN_RETRY_INTERVAL_MS: number = 120;
 
@@ -60,6 +66,9 @@ struct Index {
   /** 锁屏上的错误提示 */
   @State lockMessage: string = '';
   @State settingsVisible: boolean = false;
+  /** 应用内启动页是否还盖着（系统那张 startWindowIcon 已换成纯白，首帧由我们画） */
+  @State splashVisible: boolean = true;
+  private splashAt: number = 0;
   /**
    * 前台信号：EntryAbility.onForeground 每进一次前台就把这个数 +1。
    * 页面通过 @StorageLink 收到通知再判断"要不要锁"——比在 Ability 里直接操作 UI 干净，
@@ -105,6 +114,21 @@ struct Index {
     }
   }
 
+  /**
+   * 关闭启动页：保证最短展示时间（否则页面一到就是一闪），
+   * 由「首屏加载完成」或「兜底定时器」触发，重复调用无害。
+   */
+  private finishSplash(): void {
+    if (!this.splashVisible) {
+      return;
+    }
+    const elapsed = Date.now() - this.splashAt;
+    const wait = elapsed >= SPLASH_MIN_MS ? 0 : SPLASH_MIN_MS - elapsed;
+    setTimeout(() => {
+      this.splashVisible = false;
+    }, wait);
+  }
+
   private unlock(): void {
     if (this.lockBusy) {
       return;
@@ -144,6 +168,13 @@ struct Index {
     // 冷启动（进程被杀过）等价于「离开很久」：开了指纹锁就必须先解锁再看内容
     // 已经锁上的会话不能因为「此刻指纹不可用」被算成未锁（页面重建/窗口重建时会发生）
     this.setLocked(this.locked || AppGraph.shouldLockOnColdStart());
+    // 启动页：锁屏已经在盖着的话就没必要再画一层
+    this.splashAt = Date.now();
+    if (this.locked) {
+      this.splashVisible = false;
+    } else {
+      setTimeout(() => this.finishSplash(), SPLASH_MAX_MS);
+    }
     if (AppGraph.settings().getLockEnabled() && !AppGraph.biometricAvailable()) {
       // 开着锁但指纹不可用：本次不锁，但必须说出来——静默失效比不锁更糟
       this.notifier?.show('指纹不可用，本次未锁定');
@@ -544,6 +575,9 @@ struct Index {
     if (url === '' || url === 'about:blank') {
       return; // 空标签页不写入 tab.url：概览层与地址栏保持占位文案
     }
+    if (id === this.tabList.currentId()) {
+      this.finishSplash();
+    }
     // 真的有一页加载成功 → 之前那张拦截卡片与该标签的拦截记忆都该消失
     this.cards.pageEnd(id);
     if (id === this.tabList.currentId()) {
@@ -912,6 +946,11 @@ struct Index {
       // ---------- 白名单拦截提示（URL 可复制，避免「拦了又抄不出来」） ----------
       if (this.blockedUrl !== '' && !this.showHome) {
         this.blockedLayer()
+      }
+
+      // ---------- 启动页（首帧由我们画，尺寸与锁屏同源） ----------
+      if (this.splashVisible && !this.locked) {
+        SplashView()
       }
 
       // ---------- 设置页 ----------
