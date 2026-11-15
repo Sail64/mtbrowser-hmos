@@ -1,9 +1,9 @@
 /**
  * 锁屏层：盖住整个应用（含网页内容与所有覆盖层）。
  *
- * 交互刻意做成「点页面任何一处就发起指纹」——没有大按钮：
- * 大按钮既占视觉重量，又暗示「必须点这里」；真实场景是掏出手机就想直接把手指放上去。
- * 该不该锁由 AppGraph.shouldLockNow() 决定，本组件只负责展示与发起解锁。
+ * 排布：应用图标（右下角带小锁徽标）→ 应用名 → 状态行。
+ * 图标放中间的理由：锁定界面第一件要说清楚的事是「哪个应用被锁了」，
+ * 锁本身是通用符号，退成徽标即可。点页面任何一处都发起指纹，没有按钮。
  */
 @Component
 export struct LockScreen {
@@ -16,23 +16,45 @@ export struct LockScreen {
       Blank()
 
       Column() {
-        Image($r('app.media.ic_lock'))
-          .width(42)
-          .height(42)
-          .draggable(false)
-          .objectFit(ImageFit.Contain)
+        // 应用图标 + 右下角小锁徽标（白底圆 + 白描边，压在深色图形上也清晰）
+        Stack({ alignContent: Alignment.BottomEnd }) {
+          Image($r('app.media.ic_app_lock'))
+            .width(80)
+            .height(80)
+            .borderRadius(19)
+            .clip(true)
+            .draggable(false)
+            .objectFit(ImageFit.Cover)
 
-        Text('已锁定')
-          .fontSize(19)
+          Stack() {
+            Image($r('app.media.ic_lock'))
+              .width(14)
+              .height(14)
+              .draggable(false)
+              .objectFit(ImageFit.Contain)
+          }
+          .width(26)
+          .height(26)
+          .backgroundColor(Color.White)
+          .borderRadius(13)
+          .border({ width: 2, color: Color.White })
+          .shadow({ radius: 5, color: '#20000000', offsetY: 1 })
+          .margin({ right: 5, bottom: 5 })
+        }
+        .width(80)
+        .height(80)
+
+        Text('MT浏览器')
+          .fontSize(17)
           .fontWeight(FontWeight.Medium)
           .fontColor('#1F1F1F')
-          .margin({ top: 20 })
+          .margin({ top: 18 })
 
-        // 只留一行小字：验证中换成状态，其余时候就是「轻触解锁」
-        Text(this.busy ? '正在验证指纹…' : '轻触解锁')
+        // 一行状态：平时「已锁定 · 轻触解锁」，认证中换成进度
+        Text(this.busy ? '正在验证指纹…' : '已锁定 · 轻触解锁')
           .fontSize(13)
           .fontColor('#9AA0A6')
-          .margin({ top: 8 })
+          .margin({ top: 7 })
 
         if (this.message !== '') {
           Text(this.message)
