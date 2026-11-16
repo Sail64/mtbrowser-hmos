@@ -58,6 +58,30 @@ export default class EntryAbility extends UIAbility {
     // Main window is created, set main page for this ability
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
 
+    // 冷启动的锁状态必须在页面创建**之前**定好：
+    // Index 的 @State locked 直接取这个值，保证第一帧画出来就是锁屏，
+    // 而不是"先渲染网页、再被 aboutToAppear 盖上"。
+    const coldLock: boolean = AppGraph.shouldLockOnColdStart();
+    AppStorage.setOrCreate<boolean>('lock_state', coldLock);
+    AppGraph.setUiLocked(coldLock);
+    hilog.info(DOMAIN, 'testTag', 'cold start gate: locked=%{public}s', String(coldLock));
+
+    // 应用切走的那一刻，系统会取走一帧快照，用于桌面图标启动时的"恢复动效"。
+    // 等 onBackground 才盖就晚了：那时图已经取完，于是冷启动能看到 100~200ms 的旧网页内容。
+    // 所以一失焦（INACTIVE）就先盖成启动页样式，回到前台（ACTIVE）再撤。
+    // 隐私模式下任务列表缩略图是屏蔽的，但这条启动动效走的是另一条路，必须单独挡。
+    try {
+      windowStage.on('windowStageEvent', (event: window.WindowStageEventType) => {
+        if (event === window.WindowStageEventType.INACTIVE || event === window.WindowStageEventType.HIDDEN) {
+          AppStorage.setOrCreate<boolean>('app_cover', true);
+        } else if (event === window.WindowStageEventType.ACTIVE) {
+          AppStorage.setOrCreate<boolean>('app_cover', false);
+        }
+      });
+    } catch (err) {
+      hilog.error(DOMAIN, 'testTag', 'subscribe windowStageEvent failed: %{public}s', JSON.stringify(err));
+    }
+
     windowStage.loadContent('pages/Index', (err) => {
       if (err.code) {
         hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));

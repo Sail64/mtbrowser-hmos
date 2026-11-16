@@ -60,7 +60,11 @@ struct Index {
   @State blockedUrl: string = '';
   // ---------- 指纹锁 ----------
   /** 当前是否被锁屏盖住 */
-  @State locked: boolean = false;
+  /**
+   * 冷启动的第一帧就必须是锁屏：初值直接取 EntryAbility 在 loadContent 之前写好的 gate，
+   * 不能先 false 再在 aboutToAppear 里改 true —— 那样会有一帧网页内容露出来。
+   */
+  @State locked: boolean = AppStorage.get<boolean>('lock_state') === true;
   /** 正在等指纹结果（防重复弹认证框） */
   @State lockBusy: boolean = false;
   /** 锁屏上的错误提示 */
@@ -75,6 +79,12 @@ struct Index {
    * 也避免 Ability 与页面互相持有引用。
    */
   @StorageLink('lock_fg_tick') @Watch('onForegroundTick') fgTick: number = 0;
+
+  /** 窗口失焦信号（EntryAbility 的 windowStageEvent 写入）：切走时先盖住内容 */
+  @StorageProp('app_cover') @Watch('onCoverSignal') coverSignal: boolean = false;
+  /** 是否正盖着（撤掉时延迟一点，避免系统弹框导致的闪烁） */
+  @State covering: boolean = false;
+  private coverTimer: number = -1;
   /**
    * 拦截卡片 + 「文档已卸载」两个状态机（见 domain/BlockedCards）。
    * **只在内存里**：落盘时只取 persistedUrlOf()，被卸载的标签存空串，活页面原样保留自己的 URL。
@@ -101,6 +111,29 @@ struct Index {
     AppStorage.setOrCreate<boolean>('lock_state', value);
     // 副作用闸门（下载等）走 AppGraph，不让 platform 直读 AppStorage
     AppGraph.setUiLocked(value);
+  }
+
+  /**
+   * 失焦立刻盖、回焦延迟撤：
+   * 盖是给系统取快照用的（必须早于它），撤要等窗口真的回到前台，
+   * 否则一次系统弹框（指纹框/文件选择器）就会让页面闪一下白。
+   */
+  private onCoverSignal(): void {
+    if (this.coverSignal) {
+      if (this.coverTimer !== -1) {
+        clearTimeout(this.coverTimer);
+        this.coverTimer = -1;
+      }
+      this.covering = true;
+      return;
+    }
+    if (!this.covering) {
+      return;
+    }
+    this.coverTimer = setTimeout(() => {
+      this.coverTimer = -1;
+      this.covering = false;
+    }, 120);
   }
 
   /** 回到前台：按「离开时长 + 设置」决定是否上锁 */
@@ -946,6 +979,11 @@ struct Index {
       // ---------- 白名单拦截提示（URL 可复制，避免「拦了又抄不出来」） ----------
       if (this.blockedUrl !== '' && !this.showHome) {
         this.blockedLayer()
+      }
+
+      // ---------- 失焦遮罩（给系统取快照的那一帧用的） ----------
+      if (this.covering && !this.locked && !this.splashVisible) {
+        SplashView()
       }
 
       // ---------- 启动页（首帧由我们画，尺寸与锁屏同源） ----------
