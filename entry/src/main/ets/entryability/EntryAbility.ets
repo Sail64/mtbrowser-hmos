@@ -71,13 +71,16 @@ export default class EntryAbility extends UIAbility {
     // 所以一失焦（INACTIVE）就先盖成启动页样式，回到前台（ACTIVE）再撤。
     // 隐私模式下任务列表缩略图是屏蔽的，但这条启动动效走的是另一条路，必须单独挡。
     try {
-      windowStage.on('windowStageEvent', (event: window.WindowStageEventType) => {
+      // 留一份引用：windowStage 销毁时要摘掉，否则窗口阶段重建会叠出多个监听
+      this.stageRef = windowStage;
+      this.stageListener = (event: window.WindowStageEventType): void => {
         if (event === window.WindowStageEventType.INACTIVE || event === window.WindowStageEventType.HIDDEN) {
           AppStorage.setOrCreate<boolean>('app_cover', true);
         } else if (event === window.WindowStageEventType.ACTIVE) {
           AppStorage.setOrCreate<boolean>('app_cover', false);
         }
-      });
+      };
+      windowStage.on('windowStageEvent', this.stageListener);
     } catch (err) {
       hilog.error(DOMAIN, 'testTag', 'subscribe windowStageEvent failed: %{public}s', JSON.stringify(err));
     }
@@ -96,7 +99,20 @@ export default class EntryAbility extends UIAbility {
   onWindowStageDestroy(): void {
     // Main window is destroyed, release UI related resources
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
+    try {
+      if (this.stageRef !== undefined && this.stageListener !== undefined) {
+        this.stageRef.off('windowStageEvent', this.stageListener);
+      }
+    } catch (err) {
+      hilog.error(DOMAIN, 'testTag', 'unsubscribe windowStageEvent failed: %{public}s', JSON.stringify(err));
+    }
+    this.stageRef = undefined;
+    this.stageListener = undefined;
   }
+
+  /** windowStageEvent 的监听句柄与所属 stage（销毁时摘掉，避免重建后叠监听） */
+  private stageListener: ((event: window.WindowStageEventType) => void) | undefined = undefined;
+  private stageRef: window.WindowStage | undefined = undefined;
 
   onForeground(): void {
     // 只发一个单调递增的信号：页面用 @StorageLink 收到后自己判断该不该锁。

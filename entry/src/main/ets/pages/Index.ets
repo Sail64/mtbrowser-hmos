@@ -114,9 +114,9 @@ struct Index {
   }
 
   /**
-   * 失焦立刻盖、回焦延迟撤：
-   * 盖是给系统取快照用的（必须早于它），撤要等窗口真的回到前台，
-   * 否则一次系统弹框（指纹框/文件选择器）就会让页面闪一下白。
+   * 失焦立刻盖、回焦立刻撤：
+   * 盖是给系统取快照用的（必须早于它），撤要等窗口真的回到前台。
+   * 撤不能延迟——那段时间用户看到的就是多余的白屏。
    */
   private onCoverSignal(): void {
     if (this.coverSignal) {
@@ -130,14 +130,25 @@ struct Index {
     if (!this.covering) {
       return;
     }
+    // 0ms：回到前台立刻揭盖。这层盖只为"给系统取快照的那一帧"而存在，
+    // 它不是给用户看的过渡页——多留一毫秒都是多余的白屏。
     this.coverTimer = setTimeout(() => {
       this.coverTimer = -1;
       this.covering = false;
-    }, 120);
+    }, 0);
   }
 
   /** 回到前台：按「离开时长 + 设置」决定是否上锁 */
   private onForegroundTick(): void {
+    // 兜底揭盖：Ability 已经回到前台，遮罩就必须撤。
+    // 只靠 windowStageEvent 的 ACTIVE 太脆——漏一次（事件丢失/时序异常）就是整屏白到底。
+    if (this.covering) {
+      if (this.coverTimer !== -1) {
+        clearTimeout(this.coverTimer);
+        this.coverTimer = -1;
+      }
+      this.covering = false;
+    }
     if (this.locked) {
       return;
     }
